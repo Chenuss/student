@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>КТП Генератор — дидактические материалы для колледжа СПО</title>
+
+<!-- Tailwind CSS (CDN, без сборщиков) -->
+<script src="https://cdn.tailwindcss.com"></script>
+
+<!-- Alpine.js -->
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.14.1/dist/cdn.min.js"></script>
+
+<!-- marked.js — Markdown -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+
+<!-- KaTeX — формулы $...$ и $$...$$ -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+
+<style>
+  [x-cloak]{display:none!important}
+  .prose-material h1{font-size:1.5rem;font-weight:700;margin:1rem 0 .5rem;border-bottom:1px solid #e5e7eb;padding-bottom:.25rem}
+  .prose-material h2{font-size:1.25rem;font-weight:700;margin:1rem 0 .5rem;color:#1d4ed8}
+  .prose-material h3{font-size:1.1rem;font-weight:600;margin:.75rem 0 .4rem}
+  .prose-material p{margin:.5rem 0;line-height:1.65}
+  .prose-material ul{list-style:disc;padding-left:1.5rem;margin:.5rem 0}
+  .prose-material ol{list-style:decimal;padding-left:1.5rem;margin:.5rem 0}
+  .prose-material li{margin:.2rem 0}
+  .prose-material table{border-collapse:collapse;margin:.75rem 0;width:100%}
+  .prose-material th,.prose-material td{border:1px solid #d1d5db;padding:.4rem .6rem;font-size:.9rem}
+  .prose-material th{background:#eff6ff}
+  .prose-material blockquote{border-left:4px solid #93c5fd;background:#f0f7ff;padding:.4rem .8rem;margin:.6rem 0;border-radius:0 .375rem .375rem 0}
+  .prose-material code{background:#f3f4f6;padding:.1rem .3rem;border-radius:.25rem;font-size:.85em}
+  .prose-material pre{background:#111827;color:#e5e7eb;padding:.75rem;border-radius:.5rem;overflow-x:auto;margin:.6rem 0}
+  .prose-material pre code{background:transparent;color:inherit;padding:0}
+  .mermaid-box{background:#fff;border:1px dashed #bfdbfe;border-radius:.5rem;padding:.75rem;margin:.75rem 0;text-align:center;overflow-x:auto}
+  .mermaid-error{color:#b91c1c;font-size:.85rem;white-space:pre-wrap;text-align:left}
+  ::-webkit-scrollbar{width:8px;height:8px}::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:4px}
+</style>
+</head>
+
+<body class="bg-slate-100 text-slate-800 antialiased" x-data="ktpApp()" x-init="init()">
+
+<!-- ===== Шапка ===== -->
+<header class="bg-white border-b shadow-sm sticky top-0 z-40">
+  <div class="max-w-[1400px] mx-auto px-4 py-2.5 flex flex-wrap items-center gap-3">
+    <h1 class="text-lg font-bold text-blue-800 flex items-center gap-2 whitespace-nowrap">⚡ КТП · Генератор материалов <span class="hidden md:inline text-xs font-normal text-slate-400">СПО · ProxyAPI.ru</span></h1>
+
+    <!-- Селектор активного КТП -->
+    <select x-model.number="currentPlanId" @change="switchPlan()"
+            class="text-sm border rounded-lg px-3 py-1.5 bg-white focus:ring-2 focus:ring-blue-400 outline-none max-w-md">
+      <option value="" disabled>— Выберите КТП —</option>
+      <template x-for="p in plans" :key="p.id">
+        <option :value="p.id" x-text="`${p.discipline_title} — ${p.group_name} (${p.semester} сем., ${p.academic_year})`"></option>
+      </template>
+    </select>
+
+    <button @click="openNewPlanModal()"
+            class="text-sm bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg font-medium">+ Новый КТП</button>
+
+    <div class="ml-auto flex items-center gap-2 text-xs">
+      <span class="px-2 py-1 rounded-full" :class="mockMode ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'"
+            x-text="mockMode ? 'MOCK-режим (нет PROXYAPI_KEY)' : ('LLM: ' + modelName)"></span>
+      <span class="px-2 py-1 rounded-full" :class="smtpOn ? 'bg-sky-100 text-sky-800' : 'bg-slate-100 text-slate-500'"
+            x-text="smtpOn ? 'SMTP вкл' : 'SMTP выкл'"></span>
+      <button x-show="notifPermission !== 'granted'" @click="askNotificationPermission()"
+              class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-1.5 rounded-lg">🔔 Разрешить уведомления</button>
+      <span x-show="notifPermission === 'granted'" class="text-emerald-600 px-1">🔔 ✓</span>
+    </div>
+  </div>
+</header>
+
+<!-- ===== Тост ===== -->
+<div x-show="toastMsg" x-transition.opacity class="fixed bottom-4 right-4 z-50 bg-slate-900 text-white text-sm px-4 py-2.5 rounded-xl shadow-lg max-w-sm" x-text="toastMsg"></div>
+
+<main class="max-w-[1400px] mx-auto px-4 py-4 grid grid-cols-1 lg:grid-cols-[minmax(340px,440px)_1fr] gap-4 items-start">
+
+  <!-- ===== Левая панель: дерево КТП ===== -->
+  <section class="bg-white rounded-xl shadow-sm border">
+    <div class="px-4 py-3 border-b flex items-start justify-between gap-2">
+      <div>
+        <h2 class="font-semibold text-slate-700 leading-tight" x-text="plan ? plan.title : 'КТП не выбран'"></h2>
+        <p class="text-xs text-slate-500 mt-0.5"
+           x-text="plan ? `${plan.discipline_title} · группа ${plan.group_name}${plan.group_specialty ? ' (' + plan.group_specialty + ')' : ''} · пар: ${plan.lessons_count}, готово: ${plan.ready_count}` : 'Создайте или выберите план'"></p>
+      </div>
+      <div x-show="plan" class="flex gap-1 shrink-0">
+        <button @click="editPlanMeta()" title="Редактировать план" class="p-1.5 rounded hover:bg-slate-100 text-slate-500">✏️</button>
+        <button @click="removePlan()" title="Удалить КТП" class="p-1.5 rounded hover:bg-red-50 text-red-500">🗑</button>
+      </div>
+    </div>
+
+    <div class="p-3 space-y-3 max-h-[calc(100vh-190px)] overflow-y-auto">
+      <!-- добавление темы -->
+      <form @submit.prevent="addTopic()" class="flex gap-2">
+        <input x-model="newTopicTitle" placeholder="+ Новая тема / раздел…"
+               class="flex-1 text-sm border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-400 outline-none">
+        <input x-model.number="newTopicHours" type="number" min="0" placeholder="ч." title="Часы"
+               class="w-16 text-sm border rounded-lg px-2 py-2 outline-none">
+        <button class="text-sm bg-slate-800 hover:bg-slate-700 text-white px-3 rounded-lg">Добавить</button>
+      </form>
+
+      <template x-if="plan && plan.topics.length === 0">
+        <p class="text-sm text-slate-400 italic py-4 text-center">План пуст — добавьте первую тему выше.</p>
+      </template>
+
+      <!-- темы -->
+      <template x-for="topic in (plan ? plan.topics : [])" :key="topic.id">
+        <div class="border rounded-lg overflow-hidden">
+          <div class="bg-slate-50 px-3 py-2 flex items-center gap-2">
+            <button @click="toggleTopic(topic.id)" class="text-slate-400 w-4 text-xs"
+                    x-text="expandedTopics.includes(topic.id) ? '▾' : '▸'"></button>
+
+            <template x-if="editingTopicId !== topic.id">
+              <div class="flex-1 min-w-0">
+                <span class="text-sm font-semibold text-slate-700 truncate block" x-text="topic.title"></span>
+                <span class="text-[11px] text-slate-400" x-text="`${topic.hours} ч. · пар: ${topic.lessons.length}`"></span>
+              </div>
+            </template>
+            <template x-if="editingTopicId === topic.id">
+              <form @submit.prevent="saveTopic(topic.id)" class="flex-1 flex gap-1.5">
+                <input x-model="topicForm.title" class="flex-1 text-sm border rounded px-2 py-1 outline-none">
+                <input x-model.number="topicForm.hours" type="number" min="0" class="w-14 text-sm border rounded px-1.5 py-1 outline-none">
+                <button class="text-xs bg-emerald-600 text-white px-2 rounded">OK</button>
+                <button type="button" @click="editingTopicId=null" class="text-xs bg-slate-200 px-2 rounded">✕</button>
+              </form>
+            </template>
+
+            <template x-if="editingTopicId !== topic.id">
+              <div class="flex gap-0.5 shrink-0">
+                <button @click="startEditTopic(topic)" title="Редактировать тему" class="p-1 rounded hover:bg-slate-200 text-slate-500 text-xs">✏️</button>
+                <button @click="removeTopic(topic.id)" title="Удалить тему" class="p-1 rounded hover:bg-red-100 text-red-500 text-xs">🗑</button>
+              </div>
+            </template>
+          </div>
+
+          <div x-show="expandedTopics.includes(topic.id)" class="divide-y">
+            <!-- пары -->
+            <template x-for="lsn in topic.lessons" :key="lsn.id">
+              <div @click="selectLesson(lsn, topic)"
+                   class="px-3 py-2 cursor-pointer hover:bg-blue-50 flex items-center gap-2 transition-colors"
+                   :class="selectedLessonId === lsn.id ? 'bg-blue-100 border-l-4 border-blue-600' : 'border-l-4 border-transparent'">
+                <div class="flex-1 min-w-0">
+                  <template x-if="editingLessonTreeId !== lsn.id">
+                    <div>
+                      <span class="text-[11px] text-slate-400 mr-1" x-text="`№${lsn.lesson_order}`"></span>
+                      <span class="text-sm" x-text="lsn.title"></span>
+                      <div class="text-[11px] text-slate-400 flex items-center gap-2 flex-wrap mt-0.5">
+                        <span class="bg-slate-100 rounded px-1.5 py-0.5" x-text="lsn.lesson_type"></span>
+                        <span x-show="lsn.scheduled_date" x-text="'📅 ' + fmtDate(lsn.scheduled_date)"></span>
+                        <span x-show="lsn.homework_desc" class="truncate max-w-[180px]" x-text="'ДЗ: ' + lsn.homework_desc"></span>
+                      </div>
+                    </div>
+                  </template>
+                  <template x-if="editingLessonTreeId === lsn.id">
+                    <form @submit.prevent="saveLessonInTree(lsn)" class="space-y-1.5 py-1">
+                      <input x-model="lessonForm.title" class="w-full text-sm border rounded px-2 py-1 outline-none">
+                      <div class="flex gap-1.5">
+                        <select x-model="lessonForm.lesson_type" class="text-xs border rounded px-1.5 py-1 outline-none">
+                          <template x-for="t in lessonTypes" :key="t"><option :value="t" x-text="t"></option></template>
+                        </select>
+                        <input x-model="lessonForm.scheduled_date" type="date" class="text-xs border rounded px-1.5 py-1 outline-none">
+                      </div>
+                      <div class="flex gap-1.5">
+                        <input x-model="lessonForm.homework_desc" placeholder="ДЗ…" class="flex-1 text-xs border rounded px-2 py-1 outline-none">
+                        <button class="text-xs bg-emerald-600 text-white px-2 rounded">OK</button>
+                        <button type="button" @click="editingLessonTreeId=null" class="text-xs bg-slate-200 px-2 rounded">✕</button>
+                      </div>
+                    </form>
+                  </template>
+                </div>
+
+                <template x-if="editingLessonTreeId !== lsn.id">
+                  <div class="flex items-center gap-1 shrink-0">
+                    <button @click.stop="startEditLessonInTree(lsn)" title="Редактировать пару" class="p-1 rounded hover:bg-slate-200 text-slate-500 text-xs">✏️</button>
+                    <button @click.stop="removeLesson(lsn)" title="Удалить пару" class="p-1 rounded hover:bg-red-100 text-red-500 text-xs">🗑</button>
+                    <span class="text-[11px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap"
+                          :class="{
+                            'bg-slate-200 text-slate-600': lsn.status==='idle',
+                            'bg-amber-100 text-amber-700 animate-pulse': lsn.status==='generating',
+                            'bg-emerald-100 text-emerald-700': lsn.status==='ready',
+                            'bg-red-100 text-red-700': lsn.status==='error'}"
+                          x-text="{idle:'Не готово', generating:'Генерируется…', ready:'✓ Готово', error:'✕ Ошибка'}[lsn.status]"></span>
+                  </div>
+                </template>
+              </div>
+            </template>
+
+            <!-- добавление пары -->
+            <form @submit.prevent="addLesson(topic.id)" class="px-3 py-2 bg-slate-50 flex flex-wrap gap-1.5">
+              <input x-model="newLessonByTopic[topic.id].title" placeholder="+ Новая пара…"
+                     class="flex-1 min-w-[140px] text-xs border rounded px-2 py-1.5 outline-none">
+              <select x-model="newLessonByTopic[topic.id].lesson_type" class="text-xs border rounded px-1.5 py-1.5 outline-none">
+                <template x-for="t in lessonTypes" :key="t"><option :value="t" x-text="t"></option></template>
+              </select>
+              <input x-model="newLessonByTopic[topic.id].scheduled_date" type="date" class="text-xs border rounded px-1.5 py-1.5 outline-none">
+              <button class="text-xs bg-blue-600 hover:bg-blue-700 text-white px-2.5 py-1.5 rounded">Добавить</button>
+            </form>
+          </div>
+        </div>
+      </template>
+    </div>
+  </section>
+
+  <!-- ===== Правая панель: генерация + просмотрщик/редактор ===== -->
+  <section class="bg-white rounded-xl shadow-sm border min-h-[70vh] flex flex-col">
+
+    <template x-if="!lesson">
+      <div class="flex-1 flex flex-col items-center justify-center text-slate-400 gap-2 p-10">
+        <div class="text-5xl">📘</div>
+        <p class="text-sm">Выберите пару в КТП слева, чтобы сгенерировать и посмотреть материалы.<br>
+        Или создайте новый план кнопкой «+ Новый КТП».</p>
+      </div>
+    </template>
+
+    <template x-if="lesson">
+      <div class="flex flex-col h-full">
+        <div class="px-4 py-3 border-b bg-slate-50">
+          <div class="text-[11px] text-slate-500 mb-1"
+                x-text="lesson.plan ? `${lesson.plan.discipline_title} · группа ${lesson.plan.group_name}${lesson.plan.group_specialty ? ' (' + lesson.plan.group_specialty + ')' : ''}` : ''"></div>
+          <div class="flex items-center gap-2 flex-wrap">
+            <h2 class="font-semibold text-slate-800" x-text="lesson.title"></h2>
+            <span class="text-[11px] bg-slate-200 rounded-full px-2 py-0.5" x-text="lesson.lesson_type"></span>
+            <span class="text-[11px] text-slate-500" x-text="lesson.topic.title"></span>
+            <span class="text-[11px] text-slate-500" x-show="lesson.scheduled_date" x-text="'📅 ' + fmtDate(lesson.scheduled_date)"></span>
+            <span class="text-[11px] px-2 py-0.5 rounded-full font-medium"
+                  :class="{
+                    'bg-slate-200 text-slate-600': lesson.status==='idle',
+                    'bg-amber-100 text-amber-700 animate-pulse': lesson.status==='generating',
+                    'bg-emerald-100 text-emerald-700': lesson.status==='ready',
+                    'bg-red-100 text-red-700': lesson.status==='error'}"
+                  x-text="{idle:'Не готово', generating:'Генерируется…', ready:'✓ Готово', error:'✕ Ошибка'}[lesson.status]"></span>
+            <span class="text-[11px] text-slate-400 ml-auto" x-text="lesson.versions_count ? `версий: ${lesson.versions_count}` : ''"></span>
+          </div>
+          <p x-show="lesson.last_error" class="text-xs text-red-600 mt-1" x-text="'Ошибка: ' + lesson.last_error"></p>
+          <p x-show="lesson.homework_desc" class="text-xs text-slate-500 mt-1" x-text="'Домашнее задание: ' + lesson.homework_desc"></p>
+        </div>
+
+        <!-- Панель генерации -->
+        <div class="px-4 py-3 border-b space-y-2">
+          <textarea x-model="prompt" rows="2"
+                    placeholder="Уточняющий промпт (необязательно): например, «добавь лабораторный расчёт трёхфазного щита для электриков»…"
+                    class="w-full text-sm border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-400 outline-none"></textarea>
+          <div class="flex flex-wrap items-center gap-2">
+            <button @click="generate()" :disabled="lesson.status==='generating'"
+                    class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium px-4 py-2 rounded-lg">
+              <span x-show="lesson.status!=='generating'">🚀 Сгенерировать материалы</span>
+              <span x-show="lesson.status==='generating'">⏳ Генерация в фоне…</span>
+            </button>
+            <input type="email" x-model="email" placeholder="email для копии результата"
+                   class="text-sm border rounded-lg px-3 py-2 w-64 outline-none focus:ring-2 focus:ring-blue-400">
+            <button @click="saveSettings()" class="text-xs text-slate-500 underline">сохранить email</button>
+            <div class="ml-auto flex gap-1">
+              <button @click="mode = mode==='view' ? 'edit' : 'view'"
+                      class="text-sm border rounded-lg px-3 py-2 hover:bg-slate-50"
+                      x-text="mode==='view' ? '✏️ Редактировать' : '👁 Просмотр'"></button>
+              <button x-show="mode==='edit'" @click="manualSave()"
+                      class="text-sm bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg px-3 py-2">💾 Сохранить версию</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Контент -->
+        <div class="flex-1 p-4 overflow-y-auto">
+          <template x-if="mode==='edit'">
+            <textarea x-model="editContent" class="w-full h-[60vh] font-mono text-sm border rounded-lg p-3 outline-none focus:ring-2 focus:ring-blue-400"></textarea>
+          </template>
+
+          <template x-if="mode==='view'">
+            <div>
+              <template x-if="!renderedHtml">
+                <p class="text-sm text-slate-400 italic">Материалов пока нет. Нажмите «Сгенерировать материалы» — задача уйдёт в фон, а по готовности придёт системное уведомление.</p>
+              </template>
+              <div id="material-view" class="prose-material text-[15px]" x-html="renderedHtml"></div>
+            </div>
+          </template>
+        </div>
+      </div>
+    </template>
+  </section>
+</main>
+
+<!-- ===== Модальное окно: Новый КТП ===== -->
+<div x-show="showPlanModal" x-cloak class="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" @keydown.escape.window="showPlanModal=false">
+  <div class="bg-white rounded-2xl shadow-xl w-full max-w-lg p-5 space-y-4" @click.outside="showPlanModal=false">
+    <h3 class="font-semibold text-lg">Новый календарно-тематический план</h3>
+
+    <div class="space-y-1">
+      <label class="text-xs font-medium text-slate-500">Предмет (дисциплина)</label>
+      <div class="flex gap-2">
+        <select x-model.number="planForm.discipline_id" class="flex-1 text-sm border rounded-lg px-3 py-2 outline-none">
+          <option value="" disabled>— выбрать —</option>
+          <template x-for="d in disciplines" :key="d.id"><option :value="d.id" x-text="`${d.title} (${d.total_hours} ч.)`"></option></template>
+        </select>
+        <button type="button" @click="showQuickDisc = !showQuickDisc" class="text-xs border rounded-lg px-2.5 hover:bg-slate-50">+ предмет</button>
+      </div>
+      <div x-show="showQuickDisc" class="flex gap-2 pt-1">
+        <input x-model="quickDisc.title" placeholder="Название предмета" class="flex-1 text-sm border rounded-lg px-3 py-2 outline-none">
+        <input x-model.number="quickDisc.total_hours" type="number" min="0" placeholder="ч." class="w-16 text-sm border rounded-lg px-2 py-2 outline-none">
+        <button type="button" @click="quickCreateDiscipline()" class="text-sm bg-slate-800 text-white px-3 rounded-lg">Создать</button>
+      </div>
+    </div>
+
+    <div x-show="showQuickDisc" class="space-y-1">
+      <label class="text-xs font-medium text-slate-500">Описание предмета (необязательно)</label>
+      <input x-model="quickDisc.description" placeholder="Краткое описание" class="w-full text-sm border rounded-lg px-3 py-2 outline-none">
+    </div>
+
+    <div class="space-y-1">
+      <label class="text-xs font-medium text-slate-500">Учебная группа</label>
+      <div class="flex gap-2">
+        <select x-model.number="planForm.group_id" class="flex-1 text-sm border rounded-lg px-3 py-2 outline-none">
+          <option value="" disabled>— выбрать —</option>
+          <template x-for="g in groups" :key="g.id"><option :value="g.id" x-text="`${g.name} · ${g.specialty_code || 'б/кода'} · ${g.year_of_study}-й курс`"></option></template>
+        </select>
+        <button type="button" @click="showQuickGroup = !showQuickGroup" class="text-xs border rounded-lg px-2.5 hover:bg-slate-50">+ группа</button>
+      </div>
+      <div x-show="showQuickGroup" class="grid grid-cols-[1fr_1fr_auto_auto] gap-2 pt-1">
+        <input x-model="quickGroup.name" placeholder="Э-22" class="text-sm border rounded-lg px-3 py-2 outline-none">
+        <input x-model="quickGroup.specialty_code" placeholder="13.02.11" class="text-sm border rounded-lg px-3 py-2 outline-none">
+        <input x-model.number="quickGroup.year_of_study" type="number" min="1" max="5" title="Курс" class="w-14 text-sm border rounded-lg px-2 py-2 outline-none">
+        <button type="button" @click="quickCreateGroup()" class="text-sm bg-slate-800 text-white px-3 rounded-lg">Создать</button>
+      </div>
+    </div>
+
+    <div class="grid grid-cols-2 gap-3">
+      <div class="space-y-1">
+        <label class="text-xs font-medium text-slate-500">Семестр</label>
+        <input x-model.number="planForm.semester" type="number" min="1" max="12" class="w-full text-sm border rounded-lg px-3 py-2 outline-none">
+      </div>
+      <div class="space-y-1">
+        <label class="text-xs font-medium text-slate-500">Учебный год</label>
+        <input x-model="planForm.academic_year" class="w-full text-sm border rounded-lg px-3 py-2 outline-none">
+      </div>
+    </div>
+
+    <div class="space-y-1">
+      <label class="text-xs font-medium text-slate-500">Название плана (пусто = автоматически)</label>
+      <input x-model="planForm.title" placeholder="КТП: Электротехника для группы Э-21 (2026/2027)"
+             class="w-full text-sm border rounded-lg px-3 py-2 outline-none">
+    </div>
+
+    <div class="flex justify-end gap-2 pt-1">
+      <button @click="showPlanModal=false" class="text-sm border rounded-lg px-4 py-2 hover:bg-slate-50">Отмена</button>
+      <button @click="createPlan()" class="text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 py-2 font-medium">Создать КТП</button>
+    </div>
+  </div>
+</div>
+
+<script>
+function ktpApp() {
+  return {
+    /* ---------- состояние ---------- */
+    plans: [], disciplines: [], groups: [], lessonTypes: [],
+    currentPlanId: null, plan: null,
+    expandedTopics: [],
+    selectedLessonId: null, lesson: null,
+    renderedHtml: '', editContent: '', mode: 'view',
+    prompt: '', email: '',
+    mockMode: {{ 'true' if mock_mode else 'false' }},
+    modelName: "{{ model_name }}",
+    smtpOn: {{ 'true' if smtp_on else 'false' }},
+    pollTimer: null, toastMsg: '',
+    notifPermission: (typeof Notification !== 'undefined') ? Notification.permission : 'unsupported',
+
+    /* inline-editing */
+    editingTopicId: null, topicForm: {title:'', hours:0},
+    editingLessonTreeId: null, lessonForm: {title:'', lesson_type:'Лекция', scheduled_date:'', homework_desc:''},
+
+    /* new topic/lesson forms */
+    newTopicTitle: '', newTopicHours: 0,
+    newLessonByTopic: {},   // topic_id -> {title, lesson_type, scheduled_date}
+
+    /* modal */
+    showPlanModal: false, showQuickDisc: false, showQuickGroup: false,
+    planForm: {title:'', discipline_id:'', group_id:'', semester:1, academic_year:'2026/2027'},
+    quickDisc: {title:'', description:'', total_hours:0},
+    quickGroup: {name:'', specialty_code:'', year_of_study:1},
+
+    /* ---------- init ---------- */
+    async init() {
+      window.__mmdCounter = window.__mmdCounter || 0;
+      marked.setOptions({ breaks: true, gtable: true });
+      try {
+        const [pl, gr, di, lt] = await Promise.all([
+          fetch('/api/plans').then(r=>r.json()),
+          fetch('/api/groups').then(r=>r.json()),
+          fetch('/api/disciplines').then(r=>r.json()),
+          fetch('/api/meta/lesson_types').then(r=>r.json()),
+        ]);
+        this.plans = pl.plans || [];
+        this.groups = gr.groups || [];
+        this.disciplines = di.disciplines || [];
+        this.lessonTypes = lt.lesson_types || ['Лекция','Практика','Лабораторная'];
+        if (this.plans.length) {
+          this.currentPlanId = this.plans[0].id;
+          await this.loadPlan();
+        }
+      } catch(e) { console.error(e); this.toast('Не удалось загрузить данные'); }
+      this.askNotificationPermission();
+      this.loadSettings();
+    },
+
+    async loadSettings() {
+      try {
+        const s = await fetch('/api/settings').then(r=>r.json());
+        if (!this.email) this.email = s.email_for_notifications || '';
+      } catch(e) {}
+    },
+    async saveSettings() {
+      if (!this.email) return;
+      await fetch('/api/settings', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({email_for_notifications: this.email, notify_email_enabled: true})});
+      this.toast('Email сохранён: ' + this.email);
+    },
+
+    /* ---------- helpers ---------- */
+    fmtDate(d){ try { return new Date(d+'T00:00:00').toLocaleDateString('ru-RU',{day:'2-digit',month:'2-digit'}); } catch(e){ return d; } },
+    toast(msg){ this.toastMsg = msg; setTimeout(()=>this.toastMsg='', 4200); },
+    esc(s){ return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); },
+
+    /* ---------- уведомления ---------- */
+    askNotificationPermission(){
+      if (typeof Notification === 'undefined') return;
+      if (Notification.permission === 'default') {
+        Notification.requestPermission().then(p => this.notifPermission = p);
+      } else this.notifPermission = Notification.permission;
+    },
+    systemNotify(title, body){
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        try { new Notification(title, { body, icon: 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚡</text></svg>' }); }
+        catch(e){ this.toast(title + ' — ' + body); }
+      } else {
+        this.toast(title + ': ' + body);
+      }
+    },
+
+    /* ---------- планы ---------- */
+    openNewPlanModal(){
+      this.planForm = {title:'', discipline_id:'', group_id:'', semester:1, academic_year:'2026/2027'};
+      this.showQuickDisc = this.showQuickGroup = false;
+      this.showPlanModal = true;
+    },
+    async refreshPlans(){ this.plans = (await fetch('/api/plans').then(r=>r.json())).plans || []; },
+
+    async createPlan(){
+      if (!this.planForm.discipline_id || !this.planForm.group_id) { this.toast('Выберите предмет и группу'); return; }
+      const res = await fetch('/api/plans', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(this.planForm)});
+      if (!res.ok) { this.toast('Ошибка создания плана'); return; }
+      const p = await res.json();
+      this.showPlanModal = false;
+      await this.refreshPlans();
+      this.currentPlanId = p.id;
+      await this.loadPlan();
+      this.toast('КТП создан: ' + p.title);
+    },
+
+    async switchPlan(){ this.selectedLessonId = null; this.lesson = null; this.renderedHtml=''; await this.loadPlan(); },
+
+    async loadPlan(){
+      if (!this.currentPlanId) { this.plan = null; return; }
+      const p = await fetch(`/api/plans/${this.currentPlanId}`).then(r=>r.json());
+      this.plan = p;
+      this.expandedTopics = p.topics.map(t=>t.id);
+      for (const t of p.topics) {
+        if (!this.newLessonByTopic[t.id])
+          this.newLessonByTopic[t.id] = {title:'', lesson_type:'Лекция', scheduled_date:''};
+      }
+      // если выбранная пара исчезла (план удалён) — сброс
+      if (this.selectedLessonId && !p.topics.some(t=>t.lessons.some(l=>l.id===this.selectedLessonId))) {
+        this.selectedLessonId = null; this.lesson = null; this.renderedHtml='';
+      }
+    },
+
+    async editPlanMeta(){
+      if (!this.plan) return;
+      const title = prompt('Название КТП:', this.plan.title);
+      if (title === null) return;
+      const sem = prompt('Семестр:', this.plan.semester);
+      const ay = prompt('Учебный год:', this.plan.academic_year);
+      await fetch(`/api/plans/${this.plan.id}`, {method:'PUT', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({title: title.trim() || undefined,
+          semester: sem ? parseInt(sem) : undefined,
+          academic_year: (ay||'').trim() || undefined})});
+      await this.refreshPlans(); await this.loadPlan();
+      this.toast('План обновлён');
+    },
+    async removePlan(){
+      if (!this.plan || !confirm(`Удалить КТП «${this.plan.title}» со всеми темами, парами и материалами?`)) return;
+      await fetch(`/api/plans/${this.plan.id}`, {method:'DELETE'});
+      this.plan = null; this.lesson = null; this.renderedHtml=''; this.selectedLessonId=null;
+      await this.refreshPlans();
+      this.currentPlanId = this.plans.length ? this.plans[0].id : null;
+      if (this.currentPlanId) await this.loadPlan();
+      this.toast('КТП удалён');
+    },
+
+    /* ---------- темы ---------- */
+    toggleTopic(id){ this.expandedTopics = this.expandedTopics.includes(id)
+      ? this.expandedTopics.filter(x=>x!==id) : [...this.expandedTopics, id]; },
+
+    async addTopic(){
+      if (!this.plan || !this.newTopicTitle.trim()) return;
+      const res = await fetch(`/api/plans/${this.plan.id}/topics`, {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({title: this.newTopicTitle.trim(), hours: this.newTopicHours||0})});
+      if (!res.ok) { this.toast('Ошибка добавления темы'); return; }
+      this.newTopicTitle=''; this.newTopicHours=0;
+      await this.loadPlan(); await this.refreshPlans();
+      this.toast('Тема добавлена');
+    },
+    startEditTopic(t){ this.editingTopicId = t.id; this.topicForm = {title:t.title, hours:t.hours}; },
+    async saveTopic(id){
+      await fetch(`/api/topics/${id}`, {method:'PUT', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({title:this.topicForm.title.trim(), hours:this.topicForm.hours||0})});
+      this.editingTopicId = null; await this.loadPlan();
+    },
+    async removeTopic(id){
+      if (!confirm('Удалить тему вместе со всеми парами и материалами?')) return;
+      await fetch(`/api/topics/${id}`, {method:'DELETE'});
+      await this.loadPlan(); await this.refreshPlans();
+      this.toast('Тема удалена');
+    },
+
+    /* ---------- пары (в дереве) ---------- */
+    async addLesson(topicId){
+      const f = this.newLessonByTopic[topicId];
+      if (!f.title.trim()) return;
+      const res = await fetch(`/api/topics/${topicId}/lessons`, {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({title:f.title.trim(), lesson_type:f.lesson_type,
+          scheduled_date: f.scheduled_date || null})});
+      if (!res.ok) { this.toast('Ошибка добавления пары'); return; }
+      f.title=''; f.scheduled_date='';
+      await this.loadPlan(); await this.refreshPlans();
+      this.toast('Пара добавлена');
+    },
+    startEditLessonInTree(l){
+      this.editingLessonTreeId = l.id;
+      this.lessonForm = {title:l.title, lesson_type:l.lesson_type,
+        scheduled_date:l.scheduled_date||'', homework_desc:l.homework_desc||''};
+    },
+    async saveLessonInTree(l){
+      await fetch(`/api/lessons/${l.id}`, {method:'PUT', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({title:this.lessonForm.title.trim(), lesson_type:this.lessonForm.lesson_type,
+          scheduled_date: this.lessonForm.scheduled_date || null, homework_desc:this.lessonForm.homework_desc})});
+      this.editingLessonTreeId = null;
+      await this.loadPlan();
+      if (this.selectedLessonId === l.id) await this.reloadLessonData(false);
+      this.toast('Пара обновлена');
+    },
+    async removeLesson(l){
+      if (l.status==='generating') { this.toast('Нельзя удалять пару во время генерации'); return; }
+      if (!confirm(`Удалить пару «${l.title}» и её материалы?`)) return;
+      const res = await fetch(`/api/lessons/${l.id}`, {method:'DELETE'});
+      if (!res.ok) { this.toast(res.status===409 ? 'Пара генерируется — удаление запрещено' : 'Ошибка удаления'); return; }
+      if (this.selectedLessonId === l.id) {
+        this.selectedLessonId=null; this.lesson=null; this.renderedHtml='';
+        if (this.pollTimer){clearInterval(this.pollTimer); this.pollTimer=null;}
+      }
+      await this.loadPlan(); await this.refreshPlans();
+      this.toast('Пара удалена');
+    },
+
+    /* ---------- выбор пары и материал ---------- */
+    selectLesson(l, topic){
+      if (this.selectedLessonId === l.id) return;
+      this.selectedLessonId = l.id;
+      this.mode = 'view';
+      this.reloadLessonData(true).then(()=>{
+        // если пара в статусе generating (например, запустили с другого окна) — возобновить polling
+        if (this.lesson && this.lesson.status==='generating' && !this.pollTimer) this.startPolling();
+      });
+    },
+
+    async reloadLessonData(clearPrompt){
+      const d = await fetch(`/api/lessons/${this.selectedLessonId}`).then(r=>r.json());
+      this.lesson = {
+        id:d.id, title:d.title, lesson_type:d.lesson_type, status:d.status, last_error:d.last_error,
+        versions_count:d.versions_count,
+        topic: d.topic || {id:null, title:''},
+        plan: d.plan || null,
+        scheduled_date: d.scheduled_date, homework_desc: d.homework_desc,
+      };
+      if (clearPrompt) this.prompt = '';
+      const content = d.latest_version ? d.latest_version.raw_markdown_content : '';
+      this.editContent = content;
+      await this.renderMarkdown(content);
+      // синхронизировать бейдж в дереве
+      if (this.plan) for (const t of this.plan.topics) for (const l of t.lessons)
+        if (l.id===d.id) { l.status=d.status; l.has_material=!!content; }
+    },
+
+    /* ---------- рендеринг: Mermaid + Markdown + KaTeX ---------- */
+    async renderMarkdown(md){
+      if (!md) { this.renderedHtml = ''; return; }
+      // 1. вырезаем ```mermaid блоки, заменяем на маркеры (чтобы marked их не трогал)
+      const blocks = [];
+      let src = md.replace(/```mermaid\s*\r?\n([\s\S]*?)```/gi, (_, code) => {
+        blocks.push(code.trim());
+        return `\n@@MERMAID_${blocks.length - 1}@@\n`;
+      });
+      // 2. markdown -> html
+      let html;
+      try { html = marked.parse(src); } catch(e){ html = '<pre>'+this.esc(md)+'</pre>'; }
+      // 3. вставляем контейнеры mermaid вместо маркеров
+      html = html.replace(/@@MERMAID_(\d+)@@/g, (_, i) => {
+        const id = 'mmd-' + (++window.__mmdCounter) ;
+        return `<div class="mermaid-box"><div class="mermaid" id="${id}" data-src="${encodeURIComponent(blocks[+i])}"></div></div>`;
+      });
+      this.renderedHtml = html;
+      await this.$nextTick();
+      const root = document.getElementById('material-view');
+      if (!root) return;
+      // 4. асинхронный рендер каждой схемы через mermaid.render
+      if (window.mermaid) {
+        try { mermaid.initialize({startOnLoad:false, theme:'neutral', securityLevel:'loose', flowchart:{htmlLabels:true}}); } catch(e){}
+        for (const el of Array.from(root.querySelectorAll('.mermaid[data-src]'))) {
+          const code = decodeURIComponent(el.getAttribute('data-src'));
+          el.removeAttribute('data-src');
+          try {
+            const out = await mermaid.render('svg-' + el.id, code);
+            el.innerHTML = out.svg || out;
+          } catch(err) {
+            el.innerHTML = `<div class="mermaid-error">⚠ Схема Mermaid: ${this.esc(String((err && err.message) || err))}<pre style="white-space:pre-wrap">${this.esc(code)}</pre></div>`;
+          }
+        }
+      }
+      // 5. KaTeX auto-render по $...$ / $$...$$
+      try {
+        if (window.renderMathInElement) {
+          renderMathInElement(root, {
+            delimiters:[
+              {left:'$$', right:'$$', display:true},
+              {left:'$',  right:'$',  display:false},
+              {left:'\\(', right:'\\)', display:false},
+            ], throwOnError:false
+          });
+        }
+      } catch(e){ console.warn('KaTeX:', e); }
+    },
+
+    /* ---------- генерация ---------- */
+    async generate(){
+      if (!this.lesson) return;
+      const res = await fetch(`/api/lessons/${this.lesson.id}/generate`, {method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({prompt: this.prompt, email: this.email || null})});
+      const d = await res.json();
+      this.lesson.status = 'generating';
+      this.syncTreeStatus(this.lesson.id, 'generating');
+      this.toast('Задача поставлена в фон — можно переключать вкладки');
+      if (d.status === 'generating') this.startPolling();
+    },
+
+    syncTreeStatus(id, st){
+      if (this.plan) for (const t of this.plan.topics) for (const l of t.lessons)
+        if (l.id===id) l.status = st;
+    },
+
+    startPolling(){
+      if (this.pollTimer) clearInterval(this.pollTimer);
+      const lid = this.lesson.id;
+      this.pollTimer = setInterval(async () => {
+        try {
+          const s = await fetch(`/api/lessons/${lid}/status`).then(r=>r.json());
+          if (s.status === 'ready') {
+            clearInterval(this.pollTimer); this.pollTimer=null;
+            this.syncTreeStatus(lid, 'ready');
+            if (this.selectedLessonId===lid) await this.reloadLessonData(false);
+            this.systemNotify('Материалы готовы! ⚡', `Материалы для пары: ${s.title} успешно сгенерированы!`);
+            this.toast('Генерация завершена, материал загружен');
+          } else if (s.status === 'error') {
+            clearInterval(this.pollTimer); this.pollTimer=null;
+            this.syncTreeStatus(lid, 'error');
+            if (this.selectedLessonId===lid && this.lesson) this.lesson.last_error = s.last_error;
+            this.systemNotify('Ошибка генерации ✕', `Пара: ${s.title}. Попробуйте ещё раз.`);
+          }
+        } catch(e){ /* сеть моргнула — продолжаем опрос */ }
+      }, 3000);
+    },
+
+    /* ---------- ручное редактирование ---------- */
+    async manualSave(){
+      if (!this.lesson || !this.editContent.trim()) { this.toast('Пустой текст не сохраняю'); return; }
+      const res = await fetch(`/api/lessons/${this.lesson.id}/save`, {method:'POST',
+        headers:{'Content-Type':'application/json'}, body: JSON.stringify({content:this.editContent})});
+      const d = await res.json();
+      this.toast(`Сохранено как версия v${d.version_num}`);
+      this.mode='view';
+      await this.reloadLessonData(false); await this.refreshPlans();
+    },
+
+    /* ---------- быстрое создание справочников из модалки ---------- */
+    async quickCreateDiscipline(){
+      if (!this.quickDisc.title.trim()) { this.toast('Укажите название предмета'); return; }
+      const res = await fetch('/api/disciplines', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(this.quickDisc)});
+      if (!res.ok) {
+        const d = await res.json().catch(()=>({}));
+        this.toast(res.status===409 ? 'Такой предмет уже есть' : ('Ошибка: '+(d.detail||''))); return;
+      }
+      const nd = await res.json();
+      this.disciplines.push(nd);
+      this.planForm.discipline_id = nd.id;
+      this.quickDisc = {title:'', description:'', total_hours:0};
+      this.showQuickDisc = false;
+      this.toast('Предмет создан: ' + nd.title);
+    },
+    async quickCreateGroup(){
+      if (!this.quickGroup.name.trim()) { this.toast('Укажите название группы'); return; }
+      const res = await fetch('/api/groups', {method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify(this.quickGroup)});
+      if (!res.ok) {
+        const d = await res.json().catch(()=>({}));
+        this.toast(res.status===409 ? 'Такая группа уже есть' : ('Ошибка: '+(d.detail||''))); return;
+      }
+      const ng = await res.json();
+      this.groups.push(ng);
+      this.planForm.group_id = ng.id;
+      this.quickGroup = {name:'', specialty_code:'', year_of_study:1};
+      this.showQuickGroup = false;
+      this.toast('Группа создана: ' + ng.name);
+    },
+  }
+}
+</script>
+<!-- Mermaid.js -->
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+</body>
+</html>
