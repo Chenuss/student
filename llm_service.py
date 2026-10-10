@@ -13,7 +13,13 @@ import asyncio
 import os
 import random
 
+from dotenv import load_dotenv
 from openai import AsyncOpenAI
+
+# ВАЖНО: читаем .env ДО os.getenv — иначе при импорте этого модуля
+# (он происходит в main.py раньше, чем там вызывается load_dotenv())
+# переменные окружения ещё не будут загружены и ключ будет пустым.
+load_dotenv()
 
 PROXYAPI_KEY = os.getenv("PROXYAPI_KEY", "").strip()
 PROXYAPI_BASE_URL = os.getenv("PROXYAPI_BASE_URL", "https://api.proxyapi.ru/v1").strip()
