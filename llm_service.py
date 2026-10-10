@@ -10,16 +10,22 @@ llm_service.py — сервис генерации дидактических м
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import random
+import time
 
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
+
+from app_logging import llm_debug_enabled, truncate
 
 # ВАЖНО: читаем .env ДО os.getenv — иначе при импорте этого модуля
 # (он происходит в main.py раньше, чем там вызывается load_dotenv())
 # переменные окружения ещё не будут загружены и ключ будет пустым.
 load_dotenv()
+
+log = logging.getLogger("ktp.llm")
 
 PROXYAPI_KEY = os.getenv("PROXYAPI_KEY", "").strip()
 PROXYAPI_BASE_URL = os.getenv("PROXYAPI_BASE_URL", "https://api.proxyapi.ru/v1").strip()
@@ -180,7 +186,11 @@ $$U = I \\cdot R = 2 \\cdot 5 = 10~В$$
 
 async def _mock_generate(lesson_title: str, discipline_title: str = "", group_name: str = "") -> str:
     """Имитация работы модели: небольшая задержка + шаблон с адаптацией темы."""
-    await asyncio.sleep(random.uniform(1.5, 3.0))
+    log.info("[МОК] Генерация для темы «%s» (PROXYAPI_KEY не задан) — реального запроса к ЛЛМ нет", lesson_title)
+    delay = random.uniform(1.5, 3.0)
+    if llm_debug_enabled():
+        log.debug("[МОК] Имитация «генерации» %.1f с…", delay)
+    await asyncio.sleep(delay)
     md = MOCK_TEMPLATE.replace("{model}", MODEL_NAME)
     # Подставим реальную тему пары и контекст предмета/группы в конспект
     ctx_bits = []
@@ -232,16 +242,48 @@ async def generate_material(
         plan_title=plan_title,
     )
 
-    completion = await client.chat.completions.create(
-        model=MODEL_NAME,
-        temperature=LLM_TEMPERATURE,
-        max_tokens=LLM_MAX_TOKENS,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": user_prompt},
-        ],
+    debug = llm_debug_enabled()
+    log.info(
+        "Запрос к ЛЛМ: model=%s, base_url=%s, temperature=%s, max_tokens=%s",
+        MODEL_NAME, PROXYAPI_BASE_URL, LLM_TEMPERATURE, LLM_MAX_TOKENS,
     )
+    if debug:
+        log.debug("→ system-промпт (%d симв.):\n%s", len(SYSTEM_PROMPT), truncate(SYSTEM_PROMPT))
+        log.debug("→ user-промпт (%d симв.):\n%s", len(user_prompt), truncate(user_prompt))
+
+    t0 = time.monotonic()
+    try:
+        completion = await client.chat.completions.create(
+            model=MODEL_NAME,
+            temperature=LLM_TEMPERATURE,
+            max_tokens=LLM_MAX_TOKENS,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.error(
+            "Ошибка запроса к ЛЛМ (model=%s, %.2f с): %s: %s",
+            MODEL_NAME, time.monotonic() - t0, type(exc).__name__, exc,
+        )
+        raise
+    elapsed = time.monotonic() - t0
+
     content = (completion.choices[0].message.content or "").strip()
+
+    usage = getattr(completion, "usage", None)
+    finish_reason = getattr(completion.choices[0], "finish_reason", None) if completion.choices else None
+    if usage is not None:
+        log.info(
+            "Ответ ЛЛМ получен за %.2f с: prompt_tokens=%s, completion_tokens=%s, total_tokens=%s, finish_reason=%s",
+            elapsed, usage.prompt_tokens, usage.completion_tokens, usage.total_tokens, finish_reason,
+        )
+    else:
+        log.info("Ответ ЛЛМ получен за %.2f с (usage недоступен), finish_reason=%s", elapsed, finish_reason)
+    if debug:
+        log.debug("← ответ модели (%d симв.):\n%s", len(content), truncate(content))
+
     if not content:
         raise RuntimeError("Модель вернула пустой ответ")
     return content

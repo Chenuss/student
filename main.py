@@ -57,10 +57,11 @@ from database import (
     RpdTopic,
     init_db,
 )
+from app_logging import setup_logging
 from notifier import send_completion_email, smtp_configured
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [%(name)s] %(message)s")
+setup_logging()  # консоль + файл по переменным LOG_LEVEL / LOG_FILE (см. .env.example)
 log = logging.getLogger("ktp-app")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -198,6 +199,10 @@ async def run_generation(lesson_id: int, extra_prompt: str, to_email_override: O
     """
     from database import engine
 
+    import time as _time
+
+    t_start = _time.monotonic()
+    log.info("▶ Генерация урока %s запущена (фон)", lesson_id)
     db = Session(engine)
     try:
         lesson = db.get(KtpLesson, lesson_id)
@@ -217,6 +222,12 @@ async def run_generation(lesson_id: int, extra_prompt: str, to_email_override: O
             group_specialty=group.specialty_code if group else "",
             plan_title=plan.title if plan else "",
         )
+        log.debug(
+            "Урок %s: тема «%s», тип «%s», раздел «%s», предмет «%s», группа «%s», уточнение преподавателя: %s",
+            lesson_id, lesson.title, lesson.lesson_type,
+            topic.title if topic else "", ctx["discipline_title"], ctx["group_name"],
+            extra_prompt.strip() or "(нет)",
+        )
 
         try:
             content = await llm_service.generate_material(
@@ -227,7 +238,7 @@ async def run_generation(lesson_id: int, extra_prompt: str, to_email_override: O
                 **ctx,
             )
         except Exception as exc:  # noqa: BLE001
-            log.exception("Ошибка генерации урока %s", lesson_id)
+            log.exception("Ошибка генерации урока %s (статус → error)", lesson_id)
             lesson.status = "error"
             lesson.last_error = f"{type(exc).__name__}: {exc}"
             db.commit()
@@ -252,7 +263,10 @@ async def run_generation(lesson_id: int, extra_prompt: str, to_email_override: O
         lesson.status = "ready"
         lesson.last_error = None
         db.commit()
-        log.info("Урок %s: материал v%s сохранён, статус → ready", lesson_id, next_num)
+        log.info(
+            "✔ Урок %s: материал v%s сохранён (%d симв.), статус → ready, всего %.1f с",
+            lesson_id, next_num, len(content), _time.monotonic() - t_start,
+        )
 
         # Email (ошибки почты не должны ломать результат)
         settings = db.query(AppSettings).first()
@@ -742,6 +756,10 @@ def start_generate(
     lesson.status = "generating"
     lesson.last_error = None
     db.commit()
+    log.info(
+        "POST /api/lessons/%s/generate — статус → generating, фоновая задача поставлена (уточнение: %s)",
+        lesson_id, (body.prompt or "").strip()[:120] or "(нет)",
+    )
 
     background_tasks.add_task(run_generation, lesson_id, body.prompt, body.email)
     return {"status": "generating"}
