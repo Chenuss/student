@@ -60,11 +60,23 @@ def setup_logging() -> logging.Logger:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
+    llm_debug = _env_flag("LLM_DEBUG", default=console_level <= logging.DEBUG)
+
     root = logging.getLogger()
     # Убираем хендлеры, добавленные где-либо ранее (например, basicConfig в main.py),
     # чтобы не было двойных записей.
     for h in list(root.handlers):
         root.removeHandler(h)
+
+    # LLM_DEBUG=true должен работать даже при LOG_LEVEL=INFO: DEBUG-записи обмена
+    # с моделью обязаны доходить хотя бы до одного хендлера (файла или консоли).
+    if llm_debug:
+        if log_file:
+            # Есть файл — подробные промпты/ответы пишутся в него, консоль не засоряем.
+            file_level = min(file_level, logging.DEBUG)
+        else:
+            # Файла нет — значит подробные DEBUG-логи должны видеться в консоли.
+            console_level = min(console_level, logging.DEBUG)
 
     root.setLevel(min(console_level, file_level))
 
@@ -92,7 +104,6 @@ def setup_logging() -> logging.Logger:
     if console_level <= logging.DEBUG or (log_file and file_level <= logging.DEBUG):
         logging.getLogger("httpx").setLevel(logging.INFO)
 
-    llm_debug = _env_flag("LLM_DEBUG", default=console_level <= logging.DEBUG)
     log.debug(
         "Логирование инициализировано: console=%s, file=%s, LLM_DEBUG=%s, LLM_LOG_CONTENT=%s",
         logging.getLevelName(console_level),
