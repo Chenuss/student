@@ -120,3 +120,63 @@ def truncate(text: str, prefix: str = "") -> str:
     tail = f"... [+{len(text) - limit} симв., всего {len(text)}]"
     body = text[:limit] + tail
     return f"{prefix}{body}" if prefix else body
+
+
+# ---------------------------------------------------------------------------
+# Журнал сырых HTTP-обменов с API ЛЛМ (LLM_HTTP_LOG=true)
+# ---------------------------------------------------------------------------
+
+def http_log_enabled() -> bool:
+    """LLM_HTTP_LOG=true — писать точные JSON тела запросов/ответов в отдельный журнал."""
+    return _env_flag("LLM_HTTP_LOG", default=False)
+
+
+def http_logger():
+    """Логгер 'ktp.llm.http' + отдельный файл журнала (по умолчанию logs/llm_http.log).
+
+    Файл журнала создаётся независимо от LOG_FILE, чтобы обмен с моделью
+    всегда можно было посмотреть целиком, не засоряя общий лог.
+    Повторные вызовы не добавляют дублирующихся хендлеров.
+    """
+    log = logging.getLogger("ktp.llm.http")
+    if getattr(log, "_ktp_http_ready", False):
+        return log
+
+    path = (os.getenv("LLM_HTTP_LOG_FILE") or "logs/llm_http.log").strip()
+    fmt = logging.Formatter(
+        "%(asctime)s | %(levelname)-7s | %(message)s", datefmt="%Y-%m-%d %H:%M:%S"
+    )
+    try:
+        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+        fh = RotatingFileHandler(
+            path, maxBytes=10 * 1024 * 1024, backupCount=5, encoding="utf-8"
+        )
+        fh.setFormatter(fmt)
+        log.addHandler(fh)
+    except OSError as exc:
+        log.warning("Не удалось открыть файл HTTP-журнала %r: %s", path, exc)
+
+    # Копии записей — в общий лог (консоль/файл), если он настроен.
+    if not logging.getLogger().handlers:
+        console = logging.StreamHandler()
+        console.setLevel(logging.INFO)
+        console.setFormatter(fmt)
+        log.addHandler(console)
+
+    log.setLevel(logging.INFO)
+    log.propagate = False  # без дублей через root-логгер
+    log.info("HTTP-журнал обмена с ЛЛМ включён (LLM_HTTP_LOG=true): %s",
+             os.path.abspath(path))
+    log._ktp_http_ready = True
+    return log
+
+
+def redact_headers(headers) -> dict:
+    """Словарь заголовков с маскированием авторизационных значений."""
+    out = {}
+    for k, v in dict(headers).items():
+        if k.lower() in ("authorization", "x-api-key", "api-key"):
+            out[k] = (v[:10] + "...***") if len(v) > 10 else "***"
+        else:
+            out[k] = v
+    return out

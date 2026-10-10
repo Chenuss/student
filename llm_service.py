@@ -15,10 +15,11 @@ import os
 import random
 import time
 
+import httpx
 from dotenv import load_dotenv
 from openai import AsyncOpenAI
 
-from app_logging import llm_debug_enabled, truncate
+from app_logging import http_log_enabled, http_logger, llm_debug_enabled, redact_headers, truncate
 
 # ВАЖНО: читаем .env ДО os.getenv — иначе при импорте этого модуля
 # (он происходит в main.py раньше, чем там вызывается load_dotenv())
@@ -32,20 +33,79 @@ PROXYAPI_BASE_URL = os.getenv("PROXYAPI_BASE_URL", "https://api.proxyapi.ru/v1")
 MODEL_NAME = os.getenv("MODEL_NAME", "deepseek/deepseek-chat").strip()
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.4") or 0.4)
 LLM_MAX_TOKENS = int(os.getenv("LLM_MAX_TOKENS", "4096") or 4096)
+# Большие модели (qwen-25-72b, deepseek-chat под нагрузкой шлюза) генерируют объёмный
+# конспект по 80–120 с и дольше — таймаут чтения по умолчанию (~60 с) обрывал соединение.
+LLM_TIMEOUT = float(os.getenv("LLM_TIMEOUT", "300") or 300)
+LLM_CONNECT_TIMEOUT = float(os.getenv("LLM_CONNECT_TIMEOUT", "15") or 15)
+LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "2") or 2)
 
 MOCK_MODE = not bool(PROXYAPI_KEY)
 
 _client: AsyncOpenAI | None = None
 
 
+def _pretty_json(raw: bytes) -> str:
+    """Тело запроса/ответа в читаемом виде (JSON с отступами), если это JSON."""
+    try:
+        import json
+
+        return json.dumps(json.loads(raw.decode("utf-8")), ensure_ascii=False, indent=2)
+    except Exception:  # noqa: BLE001 — не JSON / бинарное тело
+        text = raw.decode("utf-8", errors="replace")
+        return text if text else "<пустое тело>"
+
+
+async def _llm_http_logging(request: httpx.Request) -> None:
+    """Асинхронный event-hook httpx: пишет точное тело запроса в HTTP-журнал."""
+    hlog = http_logger()
+    body = await request.aread()
+    hlog.info(
+        "→ ЗАПРОС %s %s\n  headers: %s\n  body:\n%s",
+        request.method, request.url, redact_headers(request.headers), _pretty_json(body),
+    )
+
+
+async def _llm_http_response_logging(response: httpx.Response) -> None:
+    """Асинхронный event-hook httpx: пишет точное тело ответа в HTTP-журнал."""
+    hlog = http_logger()
+    try:
+        body = await response.aread()
+    except Exception as exc:  # noqa: BLE001
+        body = f"<не удалось прочитать тело ответа: {exc}>".encode()
+    note = ""
+    if response.status_code >= 400:
+        note = "  [ОШИБКА API — см. тело выше]"
+    hlog.info(
+        "← ОТВЕТ %s %s (%d)%s\n  headers: %s\n  body:\n%s",
+        response.request.method, response.request.url, response.status_code, note,
+        redact_headers(response.headers), _pretty_json(body),
+    )
+
+
 def get_client() -> AsyncOpenAI:
     global _client
     if _client is None:
-        _client = AsyncOpenAI(
+        kwargs = dict(
             base_url=PROXYAPI_BASE_URL,
             api_key=PROXYAPI_KEY or "mock-key-no-real-call",
-            timeout=120.0,
-            max_retries=2,
+            timeout=httpx.Timeout(LLM_TIMEOUT, connect=LLM_CONNECT_TIMEOUT),
+            max_retries=LLM_MAX_RETRIES,
+        )
+        if http_log_enabled():
+            # Собственный транспорт с hooks — сырой HTTP-журнал всех обменов с API.
+            kwargs["http_client"] = httpx.AsyncClient(
+                timeout=httpx.Timeout(LLM_TIMEOUT, connect=LLM_CONNECT_TIMEOUT),
+                event_hooks={
+                    "request": [_llm_http_logging],
+                    "response": [_llm_http_response_logging],
+                },
+            )
+        _client = AsyncOpenAI(**kwargs)
+        log.info(
+            "Клиент ЛЛМ инициализирован: model=%s, base_url=%s, timeout=%.0f с "
+            "(connect %.0f с), max_retries=%d, HTTP-журнал=%s",
+            MODEL_NAME, PROXYAPI_BASE_URL, LLM_TIMEOUT, LLM_CONNECT_TIMEOUT,
+            LLM_MAX_RETRIES, "включён" if http_log_enabled() else "выключен",
         )
     return _client
 
