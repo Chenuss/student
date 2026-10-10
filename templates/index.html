@@ -15,9 +15,10 @@
 <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
 
 <!-- KaTeX — формулы $...$ и $$...$$ -->
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<!-- KaTeX auto-render (renderMathInElement) -->
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
 
 <style>
   [x-cloak]{display:none!important}
@@ -596,15 +597,26 @@ function ktpApp() {
     /* ---------- рендеринг: Mermaid + Markdown + KaTeX ---------- */
     async renderMarkdown(md){
       if (!md) { this.renderedHtml = ''; return; }
+      // А. Предобработка Markdown перед marked.js:
+      // LLM иногда вставляет маркеры списков (-, *, +) перед открывающими/закрывающими
+      // блоками $$ — marked.js ломает целостность блока и KaTeX получает сырой текст.
+      // 1) Убираем маркеры списков перед $$ (жёсткое правило из задания):
+      //    rawText.replace(/^(\s*)[-*+]\s*\$\$/gm, '$$$')
+      let rawText = md.replace(/^(\s*)[-*+]\s*\$\$/gm, '$$$');
+      // 2) Если формула всё равно осталась разорванной внутри списка (маркер перед
+      //    содержимым или перед закрывающим $$) — принудительно собираем весь
+      //    $$...$$-блок в отдельный параграф с пустой строкой до и после него.
+      rawText = rawText.replace(/(?:^[ \t]*(?:[-*+]|\d+[.)])[ \t]*)[^\r\n]*?\$\$[\s\S]*?\$\$/gm,
+                                m => '\n\n' + m.replace(/^[ \t]*(?:[-*+]|\d+[.)])[ \t]*/gm, '').trim().replace(/\r?\n/g,' ') + '\n\n');
       // 1. вырезаем ```mermaid блоки, заменяем на маркеры (чтобы marked их не трогал)
       const blocks = [];
-      let src = md.replace(/```mermaid\s*\r?\n([\s\S]*?)```/gi, (_, code) => {
+      let src = rawText.replace(/```mermaid\s*\r?\n([\s\S]*?)```/gi, (_, code) => {
         blocks.push(code.trim());
         return `\n@@MERMAID_${blocks.length - 1}@@\n`;
       });
       // 2. markdown -> html
       let html;
-      try { html = marked.parse(src); } catch(e){ html = '<pre>'+this.esc(md)+'</pre>'; }
+      try { html = marked.parse(src); } catch(e){ html = '<pre>'+this.esc(rawText)+'</pre>'; }
       // 3. вставляем контейнеры mermaid вместо маркеров
       html = html.replace(/@@MERMAID_(\d+)@@/g, (_, i) => {
         const id = 'mmd-' + (++window.__mmdCounter) ;
@@ -614,32 +626,51 @@ function ktpApp() {
       await this.$nextTick();
       const root = document.getElementById('material-view');
       if (!root) return;
-      // 4. асинхронный рендер каждой схемы через mermaid.render
-      if (window.mermaid) {
-        try { mermaid.initialize({startOnLoad:false, theme:'neutral', securityLevel:'loose', flowchart:{htmlLabels:true}}); } catch(e){}
-        for (const el of Array.from(root.querySelectorAll('.mermaid[data-src]'))) {
-          const code = decodeURIComponent(el.getAttribute('data-src'));
-          el.removeAttribute('data-src');
-          try {
-            const out = await mermaid.render('svg-' + el.id, code);
-            el.innerHTML = out.svg || out;
-          } catch(err) {
-            el.innerHTML = `<div class="mermaid-error">⚠ Схема Mermaid: ${this.esc(String((err && err.message) || err))}<pre style="white-space:pre-wrap">${this.esc(code)}</pre></div>`;
-          }
-        }
-      }
-      // 5. KaTeX auto-render по $...$ / $$...$$
+      // Б. KaTeX auto-render сразу после вставки HTML в контейнер (по $...$ / $$...$$)
       try {
         if (window.renderMathInElement) {
           renderMathInElement(root, {
             delimiters:[
               {left:'$$', right:'$$', display:true},
               {left:'$',  right:'$',  display:false},
-              {left:'\\(', right:'\\)', display:false},
             ], throwOnError:false
           });
         }
       } catch(e){ console.warn('KaTeX:', e); }
+      // В. Безопасный рендеринг Mermaid: обрабатываем и наши маркерные контейнеры,
+      // и блоки pre code.language-mermaid (если marked отрендерил фенс сам).
+      // НЕ используем устаревший mermaid.init(); только асинхронный mermaid.run()
+      // с try/catch на каждый блок — синтаксическая ошибка в одной схеме
+      // не должна ломать отрисовку остальных.
+      if (window.mermaid) {
+        try { mermaid.initialize({ startOnLoad: false, securityLevel: 'loose' }); } catch(e){}
+        // pre code.language-mermaid -> чистый контейнер <div class="mermaid">
+        for (const pre of Array.from(root.querySelectorAll('pre code.language-mermaid'))) {
+          const holder = pre.closest('pre');
+          const div = document.createElement('div');
+          div.className = 'mermaid';
+          div.id = 'mmd-' + (++window.__mmdCounter);
+          div.setAttribute('data-src', encodeURIComponent(pre.textContent || ''));
+          const box = document.createElement('div');
+          box.className = 'mermaid-box';
+          box.appendChild(div);
+          holder.replaceWith(box);
+        }
+        for (const el of Array.from(root.querySelectorAll('.mermaid[data-src]'))) {
+          let code = decodeURIComponent(el.getAttribute('data-src'));
+          el.removeAttribute('data-src');
+          // очистка текста от HTML-энтити (marked мог экранировать кавычки как &quot; / &amp;)
+          code = code.replace(/&quot;/g, '"').replace(/&#39;/g, "'")
+                     .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+                     .replace(/&amp;/g, '&');
+          el.textContent = code;
+          try {
+            await mermaid.run({ nodes: [el] });
+          } catch(err) {
+            el.innerHTML = `<div class="mermaid-error">⚠ Схема Mermaid: ${this.esc(String((err && err.message) || err))}<pre style="white-space:pre-wrap">${this.esc(code)}</pre></div>`;
+          }
+        }
+      }
     },
 
     /* ---------- генерация ---------- */
