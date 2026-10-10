@@ -61,13 +61,26 @@ SYSTEM_PROMPT = """Ты — опытный методист и преподав�
 5. Объём — конспект на одну пару (90 минут). Пиши на русском языке в формате Markdown."""
 
 
-def build_user_prompt(lesson_title: str, lesson_type: str, topic_title: str, extra_prompt: str = "") -> str:
-    parts = [
-        f"Дисциплина: электротехника и электроника (СПО).",
-        f"Раздел КТП: {topic_title}",
-        f"Тема пары: {lesson_title}",
-        f"Тип занятия: {lesson_type}",
-    ]
+def build_user_prompt(
+    lesson_title: str,
+    lesson_type: str,
+    topic_title: str,
+    extra_prompt: str = "",
+    discipline_title: str = "",
+    group_name: str = "",
+    group_specialty: str = "",
+    plan_title: str = "",
+) -> str:
+    parts = []
+    parts.append(f"Дисциплина: {discipline_title or 'электротехника и электроника'} (СПО, колледж).")
+    if group_name:
+        spec = f", код специальности {group_specialty}" if group_specialty else ""
+        parts.append(f"Целевая группа: {group_name}{spec}. Адаптируй пример, терминологию и производственные ситуации под профиль этой группы.")
+    if plan_title:
+        parts.append(f"КТП: {plan_title}")
+    parts.append(f"Раздел КТП: {topic_title}")
+    parts.append(f"Тема пары: {lesson_title}")
+    parts.append(f"Тип занятия: {lesson_type}")
     if extra_prompt and extra_prompt.strip():
         parts.append(f"Уточнение преподавателя (обязательно учти): {extra_prompt.strip()}")
     parts.append("Сгенерируй полный дидактический материал к этой паре.")
@@ -159,14 +172,20 @@ $$U = I \\cdot R = 2 \\cdot 5 = 10~В$$
 """
 
 
-async def _mock_generate(lesson_title: str) -> str:
+async def _mock_generate(lesson_title: str, discipline_title: str = "", group_name: str = "") -> str:
     """Имитация работы модели: небольшая задержка + шаблон с адаптацией темы."""
     await asyncio.sleep(random.uniform(1.5, 3.0))
     md = MOCK_TEMPLATE.replace("{model}", MODEL_NAME)
-    # Подставим реальную тему пары в заголовок конспекте
+    # Подставим реальную тему пары и контекст предмета/группы в конспект
+    ctx_bits = []
+    if discipline_title:
+        ctx_bits.append(f"Дисциплина: *{discipline_title}*")
+    if group_name:
+        ctx_bits.append(f"Группа: *{group_name}*")
+    ctx_line = (" · ".join(ctx_bits) + ". ") if ctx_bits else ""
     md = md.replace(
         "## Теоретический конспект",
-        f"## Теоретический конспект\n\n*Тема пары: {lesson_title}.*",
+        f"## Теоретический конспект\n\n*{ctx_line}Тема пары: {lesson_title}.*",
         1,
     )
     return md
@@ -181,6 +200,10 @@ async def generate_material(
     lesson_type: str,
     topic_title: str,
     extra_prompt: str = "",
+    discipline_title: str = "",
+    group_name: str = "",
+    group_specialty: str = "",
+    plan_title: str = "",
 ) -> str:
     """
     Генерирует дидактический материал. Возвращает Markdown-строку.
@@ -189,10 +212,19 @@ async def generate_material(
     в мок-режиме всегда успешно возвращает заглушку.
     """
     if MOCK_MODE:
-        return await _mock_generate(lesson_title)
+        return await _mock_generate(lesson_title, discipline_title, group_name)
 
     client = get_client()
-    user_prompt = build_user_prompt(lesson_title, lesson_type, topic_title, extra_prompt)
+    user_prompt = build_user_prompt(
+        lesson_title=lesson_title,
+        lesson_type=lesson_type,
+        topic_title=topic_title,
+        extra_prompt=extra_prompt,
+        discipline_title=discipline_title,
+        group_name=group_name,
+        group_specialty=group_specialty,
+        plan_title=plan_title,
+    )
 
     completion = await client.chat.completions.create(
         model=MODEL_NAME,
