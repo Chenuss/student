@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Генератор дидактических материалов по электротехнике · КТП</title>
+
+<!-- Tailwind CSS -->
+<script src="https://cdn.tailwindcss.com"></script>
+<!-- Alpine.js -->
+<script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+<!-- marked.js (Markdown) -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<!-- KaTeX (формулы) -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/katex.min.css">
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/katex.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.10/dist/contrib/auto-render.min.js"></script>
+<!-- Mermaid.js (схемы цепей) -->
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+
+<style>
+  [x-cloak] { display: none !important; }
+  .prose-lesson h2 { font-size: 1.25rem; font-weight: 700; margin-top: 1.4rem; margin-bottom: .5rem; color: #1e3a8a; border-bottom: 2px solid #dbeafe; padding-bottom: .25rem;}
+  .prose-lesson h3 { font-size: 1.05rem; font-weight: 600; margin-top: 1rem; margin-bottom: .4rem; color: #1e40af; }
+  .prose-lesson p  { margin: .45rem 0; line-height: 1.6; }
+  .prose-lesson ul { list-style: disc; padding-left: 1.4rem; margin: .4rem 0; }
+  .prose-lesson ol { list-style: decimal; padding-left: 1.4rem; margin: .4rem 0; }
+  .prose-lesson li { margin: .2rem 0; }
+  .prose-lesson table { border-collapse: collapse; margin: .6rem 0; width: auto; }
+  .prose-lesson th, .prose-lesson td { border: 1px solid #cbd5e1; padding: .35rem .7rem; font-size: .9rem; }
+  .prose-lesson th { background: #eff6ff; }
+  .prose-lesson blockquote { border-left: 4px solid #f59e0b; background: #fffbeb; padding: .5rem .8rem; margin: .6rem 0; border-radius: 0 .4rem .4rem 0; }
+  .prose-lesson code:not(.language-mermaid) { background:#f1f5f9; padding:.1rem .35rem; border-radius:.3rem; font-size:.85em; }
+  .mermaid-box { background:#f8fafc; border:1px dashed #94a3b8; border-radius:.6rem; padding:.8rem; margin:.7rem 0; text-align:center; overflow-x:auto; }
+  .katex { font-size: 1.03em; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 4px; }
+</style>
+</head>
+
+<body class="bg-slate-100 text-slate-800 antialiased" x-data="ktpApp()" x-init="init()">
+
+<div class="min-h-screen flex flex-col">
+
+  <!-- ======================= ШАПКА ======================= -->
+  <header class="bg-gradient-to-r from-blue-800 to-indigo-700 text-white shadow-lg">
+    <div class="max-w-7xl mx-auto px-4 py-3 flex flex-wrap items-center gap-3 justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-white/15 flex items-center justify-center text-2xl">⚡</div>
+        <div>
+          <h1 class="font-bold leading-tight">Генератор дидактических материалов · КТП</h1>
+          <p class="text-xs text-blue-200">Электротехника и электроника · СПО · ProxyAPI.ru + фоновые уведомления</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-xs px-2.5 py-1 rounded-full"
+              :class="mockMode ? 'bg-amber-400/20 text-amber-200 border border-amber-300/40' : 'bg-emerald-400/20 text-emerald-200 border border-emerald-300/40'"
+              x-text="mockMode ? 'MOCK-режим (PROXYAPI_KEY не задан)' : ('LLM: ' + modelName)">
+        </span>
+        <span class="text-xs px-2.5 py-1 rounded-full border"
+              :class="smtpConfigured ? 'bg-emerald-400/20 text-emerald-200 border-emerald-300/40' : 'bg-slate-400/20 text-slate-200 border-slate-300/30'"
+              x-text="smtpConfigured ? 'SMTP ✓' : 'SMTP выключен'">
+        </span>
+        <button @click="requestNotifyPermission()"
+                class="text-xs px-3 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 transition border border-white/20"
+                x-text="notifPermission === 'granted' ? '🔔 Уведомления разрешены' : '🔕 Разрешить уведомления'">
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ======================= ОСНОВНАЯ СЕТКА ======================= -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 py-4 grid grid-cols-1 lg:grid-cols-[380px_1fr] gap-4 items-start">
+
+    <!-- ========== ЛЕВАЯ ПАНЕЛЬ: ДЕРЕВО КТП ========== -->
+    <aside class="bg-white rounded-2xl shadow-md border border-slate-200 overflow-hidden lg:sticky lg:top-4">
+      <div class="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
+        <h2 class="font-bold text-slate-700">📋 Календарно-тематический план</h2>
+        <button @click="loadKtp()" class="text-xs text-blue-600 hover:underline">обновить</button>
+      </div>
+
+      <div class="px-4 py-3 border-b border-slate-100 bg-blue-50/50">
+        <label class="block text-[11px] uppercase tracking-wide text-slate-500 font-semibold mb-1">Email для копии материалов</label>
+        <div class="flex gap-2">
+          <input type="email" x-model="teacherEmail" @change="saveSettings()"
+                 placeholder="teacher@example.com"
+                 class="flex-1 text-sm px-3 py-1.5 rounded-lg border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none">
+          <button @click="saveSettings()" class="text-xs px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700">💾</button>
+        </div>
+        <p class="text-[11px] text-slate-500 mt-1" x-show="settingsSaved" x-transition>Настройки сохранены ✓</p>
+      </div>
+
+      <div class="overflow-y-auto max-h-[calc(100vh-260px)] p-2 space-y-3">
+        <template x-if="loadingKtp"><p class="text-sm text-slate-400 p-3">Загрузка КТП…</p></template>
+
+        <template x-for="course in courses" :key="course.id">
+          <div>
+            <div class="px-3 py-2">
+              <p class="font-bold text-sm text-slate-800" x-text="course.title"></p>
+              <p class="text-[11px] text-slate-500" x-text="course.description"></p>
+            </div>
+
+            <template x-for="topic in course.topics" :key="topic.id">
+              <div class="mx-2 mb-2 rounded-xl border border-slate-200 overflow-hidden">
+                <button @click="toggleTopic(topic.id)"
+                        class="w-full flex items-center justify-between gap-2 px-3 py-2 bg-slate-50 hover:bg-slate-100 text-left">
+                  <span class="text-xs font-semibold text-slate-700" x-text="topic.title"></span>
+                  <span class="flex items-center gap-2 shrink-0">
+                    <span class="text-[10px] text-slate-400" x-text="topic.hours + ' ч.'"></span>
+                    <span x-text="openTopics[topic.id] ? '▾' : '▸'" class="text-slate-400"></span>
+                  </span>
+                </button>
+
+                <div x-show="openTopics[topic.id]" class="divide-y divide-slate-100">
+                  <template x-for="lesson in topic.lessons" :key="lesson.id">
+                    <button @click="selectLesson(lesson)"
+                            class="w-full text-left px-3 py-2 flex items-start gap-2 hover:bg-blue-50 transition"
+                            :class="selectedLessonId === lesson.id ? 'bg-blue-50 ring-1 ring-inset ring-blue-300' : ''">
+                      <span class="mt-0.5 text-[10px] font-mono text-slate-400 w-5 text-right shrink-0" x-text="lesson.lesson_order"></span>
+                      <span class="flex-1 min-w-0">
+                        <span class="block text-xs font-medium text-slate-800 leading-snug" x-text="lesson.title"></span>
+                        <span class="block text-[10px] text-slate-400" x-text="lesson.lesson_type"></span>
+                      </span>
+                      <span class="shrink-0 mt-0.5">
+                        <span x-show="lesson.status==='idle'" class="text-[10px] px-2 py-0.5 rounded-full bg-slate-200 text-slate-600">Не готово</span>
+                        <span x-show="lesson.status==='generating'" class="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 animate-pulse whitespace-nowrap">⏳ Генерируется…</span>
+                        <span x-show="lesson.status==='ready'" class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 whitespace-nowrap">✓ Готово</span>
+                        <span x-show="lesson.status==='error'" class="text-[10px] px-2 py-0.5 rounded-full bg-rose-100 text-rose-700">✕ Ошибка</span>
+                      </span>
+                    </button>
+                  </template>
+                </div>
+              </div>
+            </template>
+          </div>
+        </template>
+      </div>
+    </aside>
+
+    <!-- ========== ПРАВАЯ ПАНЕЛЬ: РЕДАКТОР / ПРОСМОТР ========== -->
+    <section class="bg-white rounded-2xl shadow-md border border-slate-200 min-h-[70vh] flex flex-col">
+
+      <!-- Пустое состояние -->
+      <div x-show="!lesson" class="flex-1 flex flex-col items-center justify-center text-slate-400 p-10">
+        <div class="text-6xl mb-4">⚡🔌</div>
+        <p class="font-medium">Выберите пару в КТП слева</p>
+        <p class="text-sm mt-1">Нажмите «Сгенерировать материалы» — процесс пойдёт в фоне,<br>по завершении придёт системное уведомление.</p>
+      </div>
+
+      <div x-show="lesson" x-cloak class="flex flex-col flex-1">
+        <!-- Заголовок пары -->
+        <div class="px-5 py-4 border-b border-slate-200">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <p class="text-[11px] text-slate-400" x-text="lesson && lesson.topic.title"></p>
+              <h3 class="font-bold text-lg text-slate-800" x-text="lesson && lesson.title"></h3>
+              <p class="text-xs text-slate-500" x-text="lesson ? (lesson.lesson_type + ' · пара №' + lesson.lesson_order) : ''"></p>
+            </div>
+            <div class="flex items-center gap-2">
+              <span x-show="lesson && lesson.status==='ready'" class="text-xs px-3 py-1 rounded-full bg-emerald-100 text-emerald-700 font-medium">✓ Материалы готовы<span x-show="lesson && lesson.latest_version" x-text="' · v' + (lesson.latest_version ? lesson.latest_version.version_num : '')"></span></span>
+              <span x-show="lesson && lesson.status==='generating'" class="text-xs px-3 py-1 rounded-full bg-amber-100 text-amber-700 animate-pulse">⏳ В фоне генерируется…</span>
+              <span x-show="lesson && lesson.status==='error'" class="text-xs px-3 py-1 rounded-full bg-rose-100 text-rose-700">✕ Сбой генерации</span>
+            </div>
+          </div>
+
+          <!-- Панель промпта -->
+          <div class="mt-3 flex flex-col sm:flex-row gap-2">
+            <textarea x-model="promptText" rows="2"
+                      placeholder="Уточните промпт: например, «добавь расчёт трёхфазного двигателя и задания для заочной формы обучения»…"
+                      class="flex-1 text-sm px-3 py-2 rounded-xl border border-slate-300 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none resize-y"></textarea>
+            <div class="flex flex-col gap-2 shrink-0">
+              <button @click="generate()" :disabled="isGenerating()"
+                      class="px-4 py-2 rounded-xl font-semibold text-sm transition shadow"
+                      :class="isGenerating() ? 'bg-slate-300 text-slate-500 cursor-not-allowed' : 'bg-blue-600 text-white hover:bg-blue-700'">
+                <span x-show="!isGenerating()">🚀 Сгенерировать материалы</span>
+                <span x-show="isGenerating()">⏳ Генерация в фоне…</span>
+              </button>
+              <button @click="toggleView()" x-show="hasContent()"
+                      class="px-4 py-1.5 rounded-xl text-xs border border-slate-300 text-slate-600 hover:bg-slate-50"
+                      x-text="viewMode === 'render' ? '✎ Редактировать текст' : '👁 Рендер (Markdown/KaTeX/Mermaid)'">
+              </button>
+            </div>
+          </div>
+
+          <p x-show="lesson && lesson.status==='error' && lesson.last_error"
+             class="mt-2 text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2"
+             x-text="'Ошибка: ' + (lesson ? lesson.last_error : '')"></p>
+        </div>
+
+        <!-- Тело: просмотр или редактор -->
+        <div class="flex-1 overflow-y-auto p-5 relative" style="max-height: calc(100vh - 320px);">
+
+          <!-- Режим рендера -->
+          <div x-show="viewMode === 'render'" class="prose-lesson text-[15px]">
+            <div x-show="!hasContent()" class="text-sm text-slate-400 italic">
+              Материалов ещё нет. Нажмите «Сгенерировать материалы» — конспект появится здесь после завершения фоновой задачи.
+            </div>
+            <div id="render-target"></div>
+          </div>
+
+          <!-- Режим редактора -->
+          <div x-show="viewMode === 'edit'" x-cloak class="h-full flex flex-col gap-2">
+            <textarea x-model="editBuffer" spellcheck="false"
+                      class="flex-1 w-full font-mono text-[13px] leading-relaxed p-4 rounded-xl border border-slate-300 bg-slate-50 focus:ring-2 focus:ring-blue-500 outline-none resize-none min-h-[45vh]"></textarea>
+            <div class="flex gap-2 justify-end">
+              <button @click="cancelEdit()" class="px-4 py-2 rounded-xl text-sm border border-slate-300 hover:bg-slate-50">Отмена</button>
+              <button @click="saveManual()" class="px-4 py-2 rounded-xl text-sm bg-emerald-600 text-white hover:bg-emerald-700 font-medium">💾 Сохранить как новую версию</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Toast -->
+  <div x-cloak class="fixed bottom-5 right-5 z-50 space-y-2">
+    <template x-for="t in toasts" :key="t.id">
+      <div class="px-4 py-3 rounded-xl shadow-lg text-sm text-white max-w-xs"
+           :class="t.kind === 'ok' ? 'bg-emerald-600' : (t.kind === 'err' ? 'bg-rose-600' : 'bg-blue-600')"
+           x-text="t.msg" x-transition></div>
+    </template>
+  </div>
+
+  <footer class="text-center text-[11px] text-slate-400 py-3">
+    MVP · FastAPI + SQLAlchemy + ProxyAPI.ru + Web Notifications · <span x-text="mockMode ? 'без ключа работает мок-генерация' : 'боевой режим LLM'"></span>
+  </footer>
+</div>
+
+<script>
+// ============================================================================
+// ktpApp — вся логика SPA на Alpine.js
+// ============================================================================
+
+let mermaidCounter = 0;
+
+function ktpApp() {
+  return {
+    // --- данные ---
+    courses: [],
+    openTopics: {},
+    selectedLessonId: null,
+    lesson: null,
+    promptText: '',
+    editBuffer: '',
+    viewMode: 'render',          // render | edit
+    teacherEmail: '',
+    settingsSaved: false,
+
+    // --- окружение (из Jinja) ---
+    mockMode: {{ 'true' if mock_mode else 'false' }},
+    modelName: "{{ model_name }}",
+    smtpConfigured: {{ 'true' if smtp_on else 'false' }},
+
+    // --- служебное ---
+    loadingKtp: true,
+    notifPermission: (typeof Notification !== 'undefined') ? Notification.permission : 'unsupported',
+    pollTimer: null,
+    toasts: [],
+
+    // ------------------------------------------------------------------ init
+    async init() {
+      if (window.mermaid) {
+        mermaid.initialize({ startOnLoad: false, theme: 'neutral', securityLevel: 'loose', flowchart: { htmlLabels: true } });
+      }
+      await this.loadKtp();
+      await this.loadSettings();
+      // Запрос разрешения на Web Notifications при загрузке (если промпт ещё не дан)
+      if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
+        try { await Notification.requestPermission(); this.notifPermission = Notification.permission; } catch (e) {}
+      }
+    },
+
+    toast(msg, kind = 'info', ms = 4000) {
+      const id = Date.now() + Math.random();
+      this.toasts.push({ id, msg, kind });
+      setTimeout(() => { this.toasts = this.toasts.filter(t => t.id !== id); }, ms);
+    },
+
+    requestNotifyPermission() {
+      if (typeof Notification === 'undefined') { this.toast('Браузер не поддерживает Web Notifications', 'err'); return; }
+      Notification.requestPermission().then(p => {
+        this.notifPermission = p;
+        if (p === 'granted') {
+          this.toast('Уведомления разрешены ✓', 'ok');
+          new Notification('Проверка уведомлений', { body: 'Так будет выглядеть сигнал о готовности материалов ⚡' });
+        } else this.toast('Уведомления не разрешены браузером', 'err');
+      });
+    },
+
+    // ------------------------------------------------------------------ KTP
+    async loadKtp() {
+      this.loadingKtp = true;
+      try {
+        const r = await fetch('/api/ktp');
+        const data = await r.json();
+        this.courses = data.courses || [];
+        // раскрыть первую тему каждого курса
+        this.courses.forEach(c => c.topics.forEach((t, i) => { if (i === 0) this.openTopics[t.id] = true; }));
+        if (this.selectedLessonId) this.refreshSelectedFromTree();
+      } catch (e) {
+        this.toast('Не удалось загрузить КТП: ' + e, 'err');
+      } finally {
+        this.loadingKtp = false;
+      }
+    },
+
+    refreshSelectedFromTree() {
+      for (const c of this.courses)
+        for (const t of c.topics)
+          for (const l of t.lessons)
+            if (l.id === this.selectedLessonId && this.lesson) this.lesson.status = l.status;
+    },
+
+    setLessonStatusInTree(id, status) {
+      for (const c of this.courses)
+        for (const t of c.topics)
+          for (const l of t.lessons)
+            if (l.id === id) l.status = status;
+    },
+
+    toggleTopic(id) { this.openTopics[id] = !this.openTopics[id]; },
+
+    // ------------------------------------------------------------------ Lesson
+    async selectLesson(lessonSummary) {
+      this.stopPolling();
+      this.selectedLessonId = lessonSummary.id;
+      this.viewMode = 'render';
+      try {
+        const r = await fetch(`/api/lessons/${lessonSummary.id}`);
+        if (!r.ok) throw new Error(await r.text());
+        this.lesson = await r.json();
+        this.editBuffer = this.lesson.latest_version ? this.lesson.latest_version.raw_markdown_content : '';
+        this.$nextTick(() => this.renderMaterial());
+        // Если генерация уже идёт на сервере — возобновить polling
+        if (this.lesson.status === 'generating') this.startPolling();
+      } catch (e) {
+        this.toast('Ошибка загрузки пары: ' + e, 'err');
+      }
+    },
+
+    isGenerating() { return this.lesson && this.lesson.status === 'generating'; },
+    hasContent()   { return this.lesson && this.lesson.latest_version && this.lesson.latest_version.raw_markdown_content; },
+
+    // ------------------------------------------------------------------ Generate
+    async generate() {
+      if (!this.lesson) return;
+      const id = this.lesson.id;
+      try {
+        const r = await fetch(`/api/lessons/${id}/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: this.promptText, email: this.teacherEmail || null }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));
+        this.lesson.status = 'generating';
+        this.setLessonStatusInTree(id, 'generating');
+        this.toast('Генерация запущена в фоне. Можно переключать вкладки или свернуть браузер!', 'info');
+        this.startPolling();
+      } catch (e) {
+        this.toast('Не удалось запустить генерацию: ' + e, 'err');
+      }
+    },
+
+    // ------------------------------------------------------------------ Polling статуса (раз в 3 сек)
+    startPolling() {
+      this.stopPolling();
+      const id = this.lesson.id;
+      this.pollTimer = setInterval(async () => {
+        try {
+          const r = await fetch(`/api/lessons/${id}/status`);
+          if (!r.ok) return;
+          const s = await r.json();
+          if (this.selectedLessonId === id) this.lesson.status = s.status;
+          this.setLessonStatusInTree(id, s.status);
+
+          if (s.status === 'ready') {
+            this.stopPolling();
+            await this.reloadLesson(id);
+            this.notifyDone(s.title);
+          } else if (s.status === 'error') {
+            this.stopPolling();
+            await this.reloadLesson(id);
+            this.notifyFail(s.title, s.last_error);
+          }
+        } catch (e) { /* сеть моргнула — ждём следующий цикл */ }
+      }, 3000);
+    },
+
+    stopPolling() { if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null; } },
+
+    async reloadLesson(id) {
+      const r = await fetch(`/api/lessons/${id}`);
+      if (!r.ok) return;
+      const data = await r.json();
+      if (this.selectedLessonId === id) {
+        this.lesson = data;
+        this.editBuffer = data.latest_version ? data.latest_version.raw_markdown_content : '';
+        this.viewMode = 'render';
+        this.$nextTick(() => this.renderMaterial());
+      }
+    },
+
+    // ------------------------------------------------------------------ Web Notifications
+    notifyDone(title) {
+      const body = `Материалы для пары: ${title} успешно сгенерированы!`;
+      this.toast('✅ ' + body, 'ok', 6000);
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        try {
+          new Notification('Материалы готовы! ⚡', {
+            body: body,
+            tag: 'ktp-lesson-' + this.selectedLessonId,
+          });
+        } catch (e) { /* мобильные браузеры могут блокировать конструктор */ }
+      }
+    },
+
+    notifyFail(title, err) {
+      const body = `Генерация не удалась (${err || 'неизвестная ошибка'}). Попробуйте ещё раз.`;
+      this.toast('❌ ' + body, 'err', 8000);
+      if (typeof Notification !== 'undefined' && Notification.permission === 'granted') {
+        try { new Notification('Ошибка генерации', { body: `Пара: ${title}. ${err || ''}` }); } catch (e) {}
+      }
+    },
+
+    // ------------------------------------------------------------------ Render: Markdown + KaTeX + Mermaid
+    async renderMaterial() {
+      const target = document.getElementById('render-target');
+      if (!target) return;
+      if (!this.hasContent()) { target.innerHTML = ''; return; }
+      const md = this.lesson.latest_version.raw_markdown_content;
+
+      // 1) Вырезаем блоки ```mermaid и заменяем на маркеры, чтобы marked их не трогал
+      const blocks = [];
+      let pre = md.replace(/```mermaid\r?\n([\s\S]*?)```/gim, (_, code) => {
+        const key = `@@MERMAID_${blocks.length}@@`;
+        blocks.push(code.trim());
+        return '\n\n' + key + '\n\n';
+      });
+
+      // 2) Markdown -> HTML
+      let html;
+      try { html = marked.parse(pre, { breaks: true }); }
+      catch (e) { html = '<pre>' + md.replace(/</g, '&lt;') + '</pre>'; }
+
+      // 3) Вставляем mermaid-контейнеры вместо маркеров
+      html = html.replace(/@@MERMAID_(\d+)@@/g, (_, i) => {
+        const id = 'mmd-' + (++mermaidCounter);
+        return `<div class="mermaid-box"><div class="mermaid" data-src="${encodeURIComponent(blocks[+i])}" id="${id}"></div></div>`;
+      });
+
+      target.innerHTML = html;
+
+      // 4) Mermaid: рендерим каждый свежий блок
+      if (window.mermaid) {
+        target.querySelectorAll('.mermaid[data-src]').forEach(el => {
+          const src = decodeURIComponent(el.dataset.src);
+          try {
+            mermaid.render(el.id + '-svg', src).then(res => {
+              el.innerHTML = res.svg;
+              el.removeAttribute('data-src');
+            }).catch(err => {
+              el.innerHTML = '<pre class="text-rose-600 text-xs text-left">Mermaid error: ' + (err && err.message ? err.message : err) +
+                             '</pre><pre class="text-xs text-left opacity-60">' + src.replace(/</g, '&lt;') + '</pre>';
+              el.removeAttribute('data-src');
+            });
+          } catch (err) {
+            el.innerHTML = '<pre class="text-rose-600 text-xs">' + String(err) + '</pre>';
+            el.removeAttribute('data-src');
+          }
+        });
+      }
+
+      // 5) KaTeX: авто-рендер формул $...$ и $$...$$
+      if (window.renderMathInElement) {
+        try {
+          renderMathInElement(target, {
+            delimiters: [
+              { left: '$$', right: '$$', display: true },
+              { left: '$',  right: '$',  display: false },
+            ],
+            ignoredTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'],
+            throwOnError: false,
+          });
+        } catch (e) { console.warn('KaTeX render error', e); }
+      }
+    },
+
+    // ------------------------------------------------------------------ Edit / Save
+    toggleView() {
+      if (this.viewMode === 'render') {
+        this.editBuffer = this.lesson && this.lesson.latest_version ? this.lesson.latest_version.raw_markdown_content : '';
+        this.viewMode = 'edit';
+      } else {
+        this.viewMode = 'render';
+        this.$nextTick(() => this.renderMaterial());
+      }
+    },
+
+    cancelEdit() {
+      this.editBuffer = this.lesson && this.lesson.latest_version ? this.lesson.latest_version.raw_markdown_content : '';
+      this.viewMode = 'render';
+      this.$nextTick(() => this.renderMaterial());
+    },
+
+    async saveManual() {
+      if (!this.lesson) return;
+      try {
+        const r = await fetch(`/api/lessons/${this.lesson.id}/save`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content: this.editBuffer }),
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.detail || ('HTTP ' + r.status));
+        this.lesson.status = 'ready';
+        this.setLessonStatusInTree(this.lesson.id, 'ready');
+        this.toast(`Сохранено как версия v${data.version_num} ✓`, 'ok');
+        await this.reloadLesson(this.lesson.id);
+      } catch (e) {
+        this.toast('Ошибка сохранения: ' + e, 'err');
+      }
+    },
+
+    // ------------------------------------------------------------------ Settings
+    async loadSettings() {
+      try {
+        const r = await fetch('/api/settings');
+        const s = await r.json();
+        this.teacherEmail = s.email_for_notifications || '';
+      } catch (e) {}
+    },
+
+    async saveSettings() {
+      try {
+        await fetch('/api/settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email_for_notifications: this.teacherEmail, notify_email_enabled: true }),
+        });
+        this.settingsSaved = true;
+        setTimeout(() => this.settingsSaved = false, 2500);
+      } catch (e) {
+        this.toast('Не удалось сохранить настройки', 'err');
+      }
+    },
+  };
+}
+</script>
+</body>
+</html>
