@@ -1,2 +1,5 @@
 # Compiled and build artifacts
 __pycache__/
+# Логи
+logs/
+*.log
