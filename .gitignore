@@ -3,3 +3,6 @@ __pycache__/
 # Логи
 logs/
 *.log
+
+# Генерируемые файлы презентации PowerPoint
+storage/

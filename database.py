@@ -59,6 +59,9 @@ def utcnow() -> datetime:
 
 LESSON_STATUSES = ("idle", "generating", "ready", "error")
 
+# Статус сборки презентации PowerPoint — та же шкала состояний, что и у материалов
+PRESENTATION_STATUSES = LESSON_STATUSES
+
 LESSON_TYPES = (
     "Лекция",
     "Практика",
@@ -145,6 +148,11 @@ class KtpLesson(Base):
     # idle | generating | ready | error
     status: Mapped[str] = mapped_column(String(20), default="idle")
     last_error: Mapped[str] = mapped_column(Text, nullable=True)
+    # --- презентация PowerPoint (.pptx): статус сборки и путь к файлу на диске ---
+    # idle | generating | ready | error
+    presentation_status: Mapped[str] = mapped_column(String(20), default="idle")
+    presentation_path: Mapped[str] = mapped_column(String(512), default="")
+    presentation_error: Mapped[str] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
 
     topic: Mapped["RpdTopic"] = relationship(back_populates="lessons")
@@ -353,6 +361,22 @@ def _migrate_v1_to_v2(conn) -> None:
     conn.execute(text("DROP TABLE IF EXISTS courses"))
 
 
+def _migrate_presentation_columns(conn) -> None:
+    """SQLite: добавляем колонки презентации в ktp_lessons, если их ещё нет (мягкая миграция)."""
+    from sqlalchemy import inspect as sa_inspect
+
+    insp = sa_inspect(conn)
+    if "ktp_lessons" not in set(insp.get_table_names()):
+        return
+    cols = {c["name"] for c in insp.get_columns("ktp_lessons")}
+    if "presentation_status" not in cols:
+        conn.execute(text("ALTER TABLE ktp_lessons ADD COLUMN presentation_status VARCHAR(20) DEFAULT 'idle'"))
+    if "presentation_path" not in cols:
+        conn.execute(text("ALTER TABLE ktp_lessons ADD COLUMN presentation_path VARCHAR(512) DEFAULT ''"))
+    if "presentation_error" not in cols:
+        conn.execute(text("ALTER TABLE ktp_lessons ADD COLUMN presentation_error TEXT"))
+
+
 def init_db() -> None:
     """Создаёт таблицы, выполняет миграцию v1→v2 и seed при первом запуске."""
     Base.metadata.create_all(bind=engine)
@@ -364,6 +388,12 @@ def init_db() -> None:
             import logging
 
             logging.getLogger("ktp-db").exception("Миграция v1→v2 не выполнена")
+        try:
+            _migrate_presentation_columns(conn)
+        except Exception:  # noqa: BLE001
+            import logging
+
+            logging.getLogger("ktp-db").exception("Миграция колонок презентации не выполнена")
 
     from sqlalchemy.orm import Session
 

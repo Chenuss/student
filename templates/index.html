@@ -262,6 +262,44 @@
           </div>
         </div>
 
+        <!-- Блок управления презентацией PowerPoint -->
+        <div class="px-4 py-2.5 border-b bg-indigo-50/60">
+          <div class="flex flex-wrap items-center gap-2">
+            <span class="text-xs font-semibold text-indigo-900">📊 Презентация PowerPoint:</span>
+
+            <!-- idle / error: кнопка запуска (активна только если материал урока сгенерирован) -->
+            <button x-show="presStatus==='idle' || presStatus==='error'" @click="generatePresentation()"
+                    :disabled="!hasMaterial || lesson.status==='generating' || !presCanStart"
+                    :title="!hasMaterial ? 'Сначала сгенерируйте материал урока' : 'Собрать .pptx по готовому конспекту'"
+                    class="text-sm bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-medium px-4 py-1.5 rounded-lg">
+              <span x-text="presStatus==='error' ? '🔁 Повторить генерацию слайдов (.pptx)' : '🎞 Сгенерировать слайды (.pptx)'"></span>
+            </button>
+
+            <!-- generating: индикатор загрузки -->
+            <span x-show="presStatus==='generating'"
+                  class="inline-flex items-center gap-2 text-sm text-indigo-700 font-medium">
+              <svg class="animate-spin h-4 w-4 text-indigo-600" viewBox="0 0 24 24" fill="none">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/>
+              </svg>
+              Генерация слайдов и сборка файла…
+            </span>
+
+            <!-- ready: кнопка скачивания -->
+            <a x-show="presStatus==='ready'" :href="`/api/lessons/${lesson.id}/presentation/download`"
+               class="text-sm bg-emerald-600 hover:bg-emerald-700 text-white font-medium px-4 py-1.5 rounded-lg inline-block no-underline">
+              ⬇️ Скачать презентацию (.pptx)
+            </a>
+
+            <span x-show="presStatus==='error'" class="text-xs text-red-600"
+                  x-text="presError ? 'Ошибка: ' + presError : ''"></span>
+            <button x-show="presStatus==='ready'" @click="generatePresentation()"
+                    class="text-xs text-slate-500 underline ml-1" title="Пересобрать по текущему конспекту">пересобрать</button>
+          </div>
+          <p x-show="!hasMaterial && presStatus!=='ready'" class="text-[11px] text-slate-400 mt-1">
+            Кнопка активна после генерации материала урока — слайды строятся по готовому конспекту.</p>
+        </div>
+
         <!-- Контент -->
         <div class="flex-1 p-4 overflow-y-auto">
           <template x-if="mode==='edit'">
@@ -358,6 +396,9 @@ function ktpApp() {
     expandedTopics: [],
     selectedLessonId: null, lesson: null,
     renderedHtml: '', editContent: '', mode: 'view',
+    hasMaterial: false,
+    /* презентация PowerPoint */
+    presStatus: 'idle', presError: '', presPollTimer: null, presCanStart: true,
     prompt: '', email: '',
     mockMode: {{ 'true' if mock_mode else 'false' }},
     modelName: "{{ model_name }}",
@@ -458,7 +499,7 @@ function ktpApp() {
       this.toast('КТП создан: ' + p.title);
     },
 
-    async switchPlan(){ this.selectedLessonId = null; this.lesson = null; this.renderedHtml=''; await this.loadPlan(); },
+    async switchPlan(){ this.selectedLessonId = null; this.lesson = null; this.renderedHtml=''; this.resetPresentationState(); await this.loadPlan(); },
 
     async loadPlan(){
       if (!this.currentPlanId) { this.plan = null; return; }
@@ -492,6 +533,7 @@ function ktpApp() {
       if (!this.plan || !confirm(`Удалить КТП «${this.plan.title}» со всеми темами, парами и материалами?`)) return;
       await fetch(`/api/plans/${this.plan.id}`, {method:'DELETE'});
       this.plan = null; this.lesson = null; this.renderedHtml=''; this.selectedLessonId=null;
+      this.resetPresentationState();
       await this.refreshPlans();
       this.currentPlanId = this.plans.length ? this.plans[0].id : null;
       if (this.currentPlanId) await this.loadPlan();
@@ -560,6 +602,7 @@ function ktpApp() {
       if (this.selectedLessonId === l.id) {
         this.selectedLessonId=null; this.lesson=null; this.renderedHtml='';
         if (this.pollTimer){clearInterval(this.pollTimer); this.pollTimer=null;}
+        this.resetPresentationState();
       }
       await this.loadPlan(); await this.refreshPlans();
       this.toast('Пара удалена');
@@ -588,6 +631,13 @@ function ktpApp() {
       if (clearPrompt) this.prompt = '';
       const content = d.latest_version ? d.latest_version.raw_markdown_content : '';
       this.editContent = content;
+      this.hasMaterial = !!content;
+      // состояние презентации PowerPoint
+      this.presStatus = d.presentation_status || 'idle';
+      this.presError = d.presentation_error || '';
+      if (this.presStatus === 'ready' && !d.presentation_ready) this.presStatus = 'error';
+      if (this.presStatus === 'generating' && !this.presPollTimer) this.startPresPolling();
+      else if (this.presStatus !== 'generating' && this.presPollTimer) { clearInterval(this.presPollTimer); this.presPollTimer = null; }
       await this.renderMarkdown(content);
       // синхронизировать бейдж в дереве
       if (this.plan) for (const t of this.plan.topics) for (const l of t.lessons)
@@ -708,6 +758,52 @@ function ktpApp() {
             this.syncTreeStatus(lid, 'error');
             if (this.selectedLessonId===lid && this.lesson) this.lesson.last_error = s.last_error;
             this.systemNotify('Ошибка генерации ✕', `Пара: ${s.title}. Попробуйте ещё раз.`);
+          }
+        } catch(e){ /* сеть моргнула — продолжаем опрос */ }
+      }, 3000);
+    },
+
+    /* ---------- презентация PowerPoint ---------- */
+    resetPresentationState(){
+      if (this.presPollTimer) { clearInterval(this.presPollTimer); this.presPollTimer = null; }
+      this.presStatus = 'idle'; this.presError = ''; this.hasMaterial = false;
+    },
+
+    async generatePresentation(){
+      if (!this.lesson || !this.hasMaterial) { this.toast('Сначала сгенерируйте материал урока'); return; }
+      this.presCanStart = false;  // защита от двойного клика до ответа сервера
+      try {
+        const res = await fetch(`/api/lessons/${this.lesson.id}/presentation/generate`, {method:'POST'});
+        const d = await res.json().catch(()=>({}));
+        if (!res.ok) {
+          this.toast('Ошибка: ' + (d.detail || res.status));
+          return;
+        }
+        this.presStatus = 'generating';
+        this.presError = '';
+        this.toast('Сборка презентации запущена — конспект уходит в LLM для разбивки на слайды');
+        this.startPresPolling();
+      } finally {
+        this.presCanStart = true;
+      }
+    },
+
+    startPresPolling(){
+      if (this.presPollTimer) clearInterval(this.presPollTimer);
+      const lid = this.lesson ? this.lesson.id : null;
+      if (!lid) return;
+      this.presPollTimer = setInterval(async () => {
+        try {
+          const s = await fetch(`/api/lessons/${lid}/presentation/status`).then(r=>r.json());
+          if (s.presentation_status === 'ready') {
+            clearInterval(this.presPollTimer); this.presPollTimer = null;
+            this.presStatus = 'ready'; this.presError = '';
+            this.systemNotify('Презентация готова! 📊', `Файл .pptx для пары «${s.title}» собран — можно скачать.`);
+            this.toast('Презентация собрана — кнопка «Скачать» активна');
+          } else if (s.presentation_status === 'error') {
+            clearInterval(this.presPollTimer); this.presPollTimer = null;
+            this.presStatus = 'error'; this.presError = s.presentation_error || '';
+            this.systemNotify('Ошибка сборки презентации ✕', `Пара: ${s.title}. Попробуйте ещё раз.`);
           }
         } catch(e){ /* сеть моргнула — продолжаем опрос */ }
       }, 3000);
