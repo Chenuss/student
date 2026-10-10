@@ -27,25 +27,32 @@ main.py (v2) — FastAPI приложение «Генератор дидакт�
   GET    /api/lessons/{id}/status       — polling статуса
   POST   /api/lessons/{id}/save         — ручное сохранение (новая версия)
   GET/POST /api/settings                — email преподавателя
+
+Презентация PowerPoint (.pptx):
+  POST   /api/lessons/{id}/presentation/generate  — конспект → JSON слайдов (LLM) → сборка .pptx в фоне
+  GET    /api/lessons/{id}/presentation/status    — статус: idle | generating | ready | error
+  GET    /api/lessons/{id}/presentation/download  — скачивание готового файла (.pptx, FileResponse)
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import date as date_type
 from typing import Optional
 
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 import llm_service
+import pptx_service
 from database import (
     LESSON_TYPES,
     AppSettings,
@@ -66,6 +73,13 @@ log = logging.getLogger("ktp-app")
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 templates = Jinja2Templates(directory=os.path.join(BASE_DIR, "templates"))
+
+# Папка собранных презентаций PowerPoint: storage/presentations/lesson_{id}.pptx
+PRESENTATIONS_DIR = os.getenv("PRESENTATIONS_DIR", os.path.join(BASE_DIR, "storage", "presentations"))
+
+
+def _presentation_path(lesson_id: int) -> str:
+    return os.path.join(PRESENTATIONS_DIR, f"lesson_{lesson_id}.pptx")
 
 
 # ---------------------------------------------------------------------------
@@ -282,6 +296,85 @@ async def run_generation(lesson_id: int, extra_prompt: str, to_email_override: O
 
 
 # ---------------------------------------------------------------------------
+# Фоновая задача сборки презентации PowerPoint
+# ---------------------------------------------------------------------------
+
+async def run_presentation_generation(lesson_id: int):
+    """
+    Фон: Markdown-конспект → JSON слайдов (LLM) → сборка .pptx (python-pptx) → статус ready.
+    Статусы presentation_status: idle | generating | ready | error.
+    """
+    from database import engine
+
+    import time as _time
+
+    t_start = _time.monotonic()
+    log.info("▶ Генерация презентации урока %s запущена (фон)", lesson_id)
+    db = Session(engine)
+    try:
+        lesson = db.get(KtpLesson, lesson_id)
+        if lesson is None:
+            log.error("Урок %s не найден (фон, презентация)", lesson_id)
+            return
+
+        latest = (
+            db.query(MaterialVersion)
+            .filter(MaterialVersion.lesson_id == lesson_id)
+            .order_by(MaterialVersion.version_num.desc())
+            .first()
+        )
+        if latest is None or not (latest.raw_markdown_content or "").strip():
+            lesson.presentation_status = "error"
+            lesson.presentation_error = "Нет сгенерированного материала — сначала создайте конспект урока"
+            db.commit()
+            log.warning("Урок %s: презентации нет, материал отсутствует", lesson_id)
+            return
+
+        topic = lesson.topic
+        plan = topic.plan if topic else None
+        discipline = plan.discipline if plan else None
+        group = plan.group if plan else None
+
+        # 1. LLM: конспект → строгий JSON структуры слайдов
+        try:
+            slides_json = await pptx_service.extract_presentation_json(
+                lesson_title=lesson.title,
+                lesson_text=latest.raw_markdown_content,
+                discipline_title=discipline.title if discipline else "",
+                group_name=group.name if group else "",
+            )
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Ошибка генерации JSON слайдов для урока %s", lesson_id)
+            lesson.presentation_status = "error"
+            lesson.presentation_error = f"{type(exc).__name__}: {exc}"
+            db.commit()
+            return
+
+        # 2. python-pptx: сборка файла на диске
+        out_path = _presentation_path(lesson_id)
+        try:
+            abs_path = pptx_service.build_pptx_file(slides_json, out_path)
+            n_slides = pptx_service.validate_pptx(abs_path)  # контроль целостности собранного файла
+        except Exception as exc:  # noqa: BLE001
+            log.exception("Ошибка сборки .pptx для урока %s", lesson_id)
+            lesson.presentation_status = "error"
+            lesson.presentation_error = f"{type(exc).__name__}: {exc}"
+            db.commit()
+            return
+
+        lesson.presentation_path = abs_path
+        lesson.presentation_status = "ready"
+        lesson.presentation_error = None
+        db.commit()
+        log.info(
+            "✔ Урок %s: презентация собрана (%d слайдов, %s), статус → ready, всего %.1f с",
+            lesson_id, n_slides, os.path.basename(abs_path), _time.monotonic() - t_start,
+        )
+    finally:
+        db.close()
+
+
+# ---------------------------------------------------------------------------
 # Сериализаторы
 # ---------------------------------------------------------------------------
 
@@ -295,6 +388,7 @@ def _lesson_brief(l: KtpLesson) -> dict:
         "homework_desc": l.homework_desc or "",
         "status": l.status,
         "last_error": l.last_error,
+        "presentation_status": l.presentation_status or "idle",
         "has_material": len(l.versions) > 0,
         "versions_count": len(l.versions),
     }
@@ -718,6 +812,13 @@ def get_lesson(lesson_id: int, db: Session = Depends(get_db)):
         "homework_desc": lesson.homework_desc or "",
         "status": lesson.status,
         "last_error": lesson.last_error,
+        "presentation_status": lesson.presentation_status or "idle",
+        "presentation_error": lesson.presentation_error,
+        "presentation_ready": bool(
+            lesson.presentation_status == "ready"
+            and lesson.presentation_path
+            and os.path.isfile(lesson.presentation_path)
+        ),
         "topic": {"id": lesson.topic_id, "title": topic.title if topic else ""},
         "plan": {
             "id": plan.id if plan else None,
@@ -771,6 +872,71 @@ def lesson_status(lesson_id: int, db: Session = Depends(get_db)):
     if lesson is None:
         raise HTTPException(404, "Пара не найдена")
     return {"id": lesson.id, "status": lesson.status, "title": lesson.title, "last_error": lesson.last_error}
+
+
+# ---------------------- Презентация PowerPoint (.pptx) ----------------------
+
+@app.post("/api/lessons/{lesson_id}/presentation/generate")
+def start_presentation_generate(lesson_id: int, background_tasks: BackgroundTasks, db: Session = Depends(get_db)):
+    """Запуск сборки презентации: конспект → JSON слайдов (LLM) → .pptx (python-pptx) в фоне."""
+    lesson = db.get(KtpLesson, lesson_id)
+    if lesson is None:
+        raise HTTPException(404, "Пара не найдена")
+    has_material = (
+        db.query(MaterialVersion).filter(MaterialVersion.lesson_id == lesson_id).count() > 0
+    )
+    if not has_material:
+        raise HTTPException(422, "Сначала сгенерируйте материал урока — презентация строится по конспекту")
+    if lesson.status == "generating":
+        raise HTTPException(409, "Материал ещё генерируется — дождитесь готовности конспекта")
+    if lesson.presentation_status == "generating":
+        return {"presentation_status": "generating", "detail": "Генерация презентации уже запущена"}
+
+    lesson.presentation_status = "generating"
+    lesson.presentation_error = None
+    db.commit()
+    log.info("POST /api/lessons/%s/presentation/generate — presentation_status → generating", lesson_id)
+
+    background_tasks.add_task(run_presentation_generation, lesson_id)
+    return {"presentation_status": "generating"}
+
+
+@app.get("/api/lessons/{lesson_id}/presentation/status")
+def presentation_status(lesson_id: int, db: Session = Depends(get_db)):
+    lesson = db.get(KtpLesson, lesson_id)
+    if lesson is None:
+        raise HTTPException(404, "Пара не найдена")
+    st = lesson.presentation_status or "idle"
+    file_ok = bool(lesson.presentation_path and os.path.isfile(lesson.presentation_path))
+    if st == "ready" and not file_ok:
+        st = "error"  # файл потерялся на диске — считаем презентацию недоступной
+    return {
+        "id": lesson.id,
+        "title": lesson.title,
+        "presentation_status": st,
+        "presentation_error": lesson.presentation_error,
+        "download_url": f"/api/lessons/{lesson_id}/presentation/download" if st == "ready" else None,
+    }
+
+
+@app.get("/api/lessons/{lesson_id}/presentation/download")
+def presentation_download(lesson_id: int, db: Session = Depends(get_db)):
+    """Отдаёт собранный .pptx с заголовком Content-Disposition: attachment."""
+    lesson = db.get(KtpLesson, lesson_id)
+    if lesson is None:
+        raise HTTPException(404, "Пара не найдена")
+    path = lesson.presentation_path or _presentation_path(lesson_id)
+    if lesson.presentation_status != "ready" or not os.path.isfile(path):
+        raise HTTPException(409, "Презентация ещё не готова — сначала нажмите «Сгенерировать слайды»")
+
+    safe_title = re.sub(r"[^\w\s\-–—()А-Яа-яЁё.]", "", lesson.title).strip() or f"lesson_{lesson_id}"
+    filename = f"Презентация_{safe_title[:80]}.pptx"
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        filename=filename,
+        content_disposition_type="attachment",
+    )
 
 
 @app.post("/api/lessons/{lesson_id}/save")
