@@ -16,9 +16,11 @@
 
 <!-- KaTeX — формулы $...$ и $$...$$ -->
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<!-- БЕЗ defer: katex.min.js и auto-render.min.js должны быть доступны
+     ДО первого вызова renderMarkdown(), иначе формулы останутся сырым текстом с $ -->
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 <!-- KaTeX auto-render (renderMathInElement) -->
-<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/contrib/auto-render.min.js"></script>
 
 <style>
   [x-cloak]{display:none!important}
@@ -659,6 +661,44 @@ function ktpApp() {
     },
 
     /* ---------- рендеринг: Mermaid + Markdown + KaTeX ---------- */
+    // Двухэтапный пайплайн: сначала предобработка СЫРОГО текста формул (до marked.js),
+    // затем marked.parse(), затем KaTeX auto-render поверх готового HTML.
+    _prepMath(md){
+      // 0. Вырезаем fenced-блоки (``` ... ~~~) целиком — внутри кода $ не является
+      //    математикой, предобработка не должна его трогать.
+      const fences = [];
+      let text = md.replace(/(^|\r?\n)(```|~~~)[\s\S]*?\2(?=\r?\n|$)/g, m => {
+        fences.push(m);
+        return `\n%%FENCE_${fences.length - 1}%%\n`;
+      });
+      // 1. Пробелы ВНУТРИ инлайн-формул: "$ F $" -> "$F$", "$ q_1, q_2 $" -> "$q_1, q_2$".
+      //    (KaTeX по стандарту игнорирует формулы с пробелами у знаков $ — принимает их за валюту.)
+      //    Ключевое ограничение: между знаками $ не должно быть другого $ и переноса строки,
+      //    поэтому текст МЕЖДУ двумя соседними формулами ("$F$ и $G$") никогда не схлопывается.
+      for (let i = 0; i < 6; i++) {
+        const prev = text;
+        // "$ A $" (пробелы с обеих сторон) -> "$A$"
+        text = text.replace(/\$[ \t]+([^$\r\n]+?)[ \t]+\$/g, '$$$1$$');
+        // "$ A$" (пробел только после открывающего; первый символ содержимого — не пробел,
+        //       иначе "$F$ и $G$" слился бы в "$F$и$G$") -> "$A$"
+        text = text.replace(/\$[ \t]+([^$ \t][^$\r\n]*?)\$/g, '$$$1$$');
+        if (text === prev) break;
+      }
+      // 1b. "$A $" (пробел только перед закрывающим) -> "$A$". Ленивое [^$\r\n]+? остановится
+      //     на первом подходящем "$", поэтому соседние формулы не сливаются.
+      text = text.replace(/\$([^$\r\n]+?)[ \t]+\$/g, '$$$1$$');
+      // 2. Убираем дефисы/маркеры списков прямо перед блочными формулами: "- $$" -> "$$"
+      text = text.replace(/^(\s*)[-*+][ \t]+\$\$/gm, '$$$');
+      // 3. Деэкранирование обратных слэшей внутри формул, если marked/модель их удвоили
+      //    (\\frac → \frac). Работаем только с содержимым между $ — код не трогаем.
+      text = text.replace(/\$\$([\s\S]+?)\$\$/g,
+                          (m, b) => '$$' + b.replace(/\\\\([a-zA-Z])/g, '\\$1') + '$$');
+      text = text.replace(/\$([^$\r\n]+)\$/g,
+                          (m, b) => '$' + b.replace(/\\\\([a-zA-Z])/g, '\\$1') + '$');
+      // 4. Возвращаем fenced-блоки
+      text = text.replace(/%%FENCE_(\d+)%%/g, (_, i) => fences[+i]);
+      return text;
+    },
     async renderMarkdown(md){
       if (!md) { this.renderedHtml = ''; return; }
       // А. Предобработка Markdown перед marked.js:
@@ -672,6 +712,8 @@ function ktpApp() {
       //    $$...$$-блок в отдельный параграф с пустой строкой до и после него.
       rawText = rawText.replace(/(?:^[ \t]*(?:[-*+]|\d+[.)])[ \t]*)[^\r\n]*?\$\$[\s\S]*?\$\$/gm,
                                 m => '\n\n' + m.replace(/^[ \t]*(?:[-*+]|\d+[.)])[ \t]*/gm, '').trim().replace(/\r?\n/g,' ') + '\n\n');
+      // 3) Нормализация пробелов вокруг $ и деэкранирование слэшей внутри формул
+      rawText = this._prepMath(rawText);
       // 1. вырезаем ```mermaid блоки, заменяем на маркеры (чтобы marked их не трогал)
       const blocks = [];
       let src = rawText.replace(/```mermaid\s*\r?\n([\s\S]*?)```/gi, (_, code) => {
@@ -690,15 +732,34 @@ function ktpApp() {
       await this.$nextTick();
       const root = document.getElementById('material-view');
       if (!root) return;
-      // Б. KaTeX auto-render сразу после вставки HTML в контейнер (по $...$ / $$...$$)
+      // Б. KaTeX auto-render сразу после вставки HTML в контейнер (по $...$ / $$...$$).
+      //    Библиотеки подключены с defer — ждём их готовности, иначе window.renderMathInElement
+      //    ещё не определён и формулы останутся серым моноширинным текстом с знаками $.
       try {
+        if (!window.renderMathInElement && !this._katexReady) {
+          await new Promise(res => {
+            let waited = 0;
+            const t = setInterval(() => {
+              if (window.renderMathInElement || waited >= 50) { clearInterval(t); res(); }
+              waited++;
+            }, 100);
+          });
+          this._katexReady = !!window.renderMathInElement;
+        }
         if (window.renderMathInElement) {
           renderMathInElement(root, {
             delimiters:[
               {left:'$$', right:'$$', display:true},
               {left:'$',  right:'$',  display:false},
-            ], throwOnError:false
+              {left:'\\[', right:'\\]', display:true},
+              {left:'\\(', right:'\\)', display:false},
+            ],
+            throwOnError: false, // не прерывать рендер при кириллице в \text{...}
+            errorColor: '#f43f5e',
+            ignoredTags: ['script','noscript','style','textarea','pre','code'],
           });
+        } else {
+          console.warn('KaTeX auto-render не загружен (CDN недоступен?) — показан Markdown без формул');
         }
       } catch(e){ console.warn('KaTeX:', e); }
       // В. Безопасный рендеринг Mermaid: обрабатываем и наши маркерные контейнеры,
