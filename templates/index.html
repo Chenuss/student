@@ -240,9 +240,16 @@
 
         <!-- Панель генерации -->
         <div class="px-4 py-3 border-b space-y-2">
-          <textarea x-model="prompt" rows="2"
+          <textarea x-model="prompt" @input="promptRestored = false" rows="2"
                     placeholder="Уточняющий промпт (необязательно): например, «добавь лабораторный расчёт трёхфазного щита для электриков»…"
                     class="w-full text-sm border rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-400 outline-none"></textarea>
+          <!-- Бейдж: подсказка, что текст подставлен из истории (prompt_used последней версии) -->
+          <div x-show="promptRestored" class="flex items-center gap-1">
+            <span class="inline-flex items-center gap-1 text-[11px] bg-blue-50 text-blue-700 border border-blue-200 rounded-full px-2 py-0.5">
+              📌 Промпт последней генерации сохранён
+            </span>
+            <button @click="prompt=''; promptRestored=false" class="text-[11px] text-slate-400 underline hover:text-slate-600">очистить</button>
+          </div>
           <div class="flex flex-wrap items-center gap-2">
             <button @click="generate()" :disabled="lesson.status==='generating'"
                     class="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-sm font-medium px-4 py-2 rounded-lg">
@@ -400,6 +407,7 @@ function ktpApp() {
     /* презентация PowerPoint */
     presStatus: 'idle', presError: '', presPollTimer: null, presCanStart: true,
     prompt: '', email: '',
+    promptRestored: false,   // true — в поле ввода подставлен промпт последней сохранённой генерации
     mockMode: {{ 'true' if mock_mode else 'false' }},
     modelName: "{{ model_name }}",
     smtpOn: {{ 'true' if smtp_on else 'false' }},
@@ -628,7 +636,13 @@ function ktpApp() {
         plan: d.plan || null,
         scheduled_date: d.scheduled_date, homework_desc: d.homework_desc,
       };
-      if (clearPrompt) this.prompt = '';
+      if (clearPrompt) {
+        // Промпт последней генерации сохранён в БД (MaterialVersion.prompt_used) —
+        // автоматически подставляем его в поле ввода; если материалов/промпта нет — оставляем пустым.
+        const lastPrompt = d.last_prompt || (d.latest_version ? (d.latest_version.prompt_used || '') : '');
+        this.prompt = lastPrompt;
+        this.promptRestored = !!lastPrompt;
+      }
       const content = d.latest_version ? d.latest_version.raw_markdown_content : '';
       this.editContent = content;
       this.hasMaterial = !!content;

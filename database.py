@@ -377,6 +377,22 @@ def _migrate_presentation_columns(conn) -> None:
         conn.execute(text("ALTER TABLE ktp_lessons ADD COLUMN presentation_error TEXT"))
 
 
+def _migrate_prompt_used_column(conn) -> None:
+    """SQLite: добавляем колонку prompt_used в material_versions, если её ещё нет.
+
+    Мягкая миграция для существующих БД: старые строки получают '' (DEFAULT),
+    поэтому инициализация SQLite не ломается при наличии записей.
+    """
+    from sqlalchemy import inspect as sa_inspect
+
+    insp = sa_inspect(conn)
+    if "material_versions" not in set(insp.get_table_names()):
+        return
+    cols = {c["name"] for c in insp.get_columns("material_versions")}
+    if "prompt_used" not in cols:
+        conn.execute(text("ALTER TABLE material_versions ADD COLUMN prompt_used TEXT DEFAULT ''"))
+
+
 def init_db() -> None:
     """Создаёт таблицы, выполняет миграцию v1→v2 и seed при первом запуске."""
     Base.metadata.create_all(bind=engine)
@@ -394,6 +410,12 @@ def init_db() -> None:
             import logging
 
             logging.getLogger("ktp-db").exception("Миграция колонок презентации не выполнена")
+        try:
+            _migrate_prompt_used_column(conn)
+        except Exception:  # noqa: BLE001
+            import logging
+
+            logging.getLogger("ktp-db").exception("Миграция колонки prompt_used не выполнена")
 
     from sqlalchemy.orm import Session
 
