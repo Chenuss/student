@@ -36,6 +36,9 @@ main.py (v2) — FastAPI приложение «Генератор дидакт�
 
 from __future__ import annotations
 
+import truststore
+truststore.inject_into_ssl()
+
 import logging
 import os
 import re
