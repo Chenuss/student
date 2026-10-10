@@ -121,7 +121,14 @@ def get_db():
 
 class GenerateRequest(BaseModel):
     prompt: str = ""
+    # Алиас из интерфейса: «Уточнение преподавателя / Промпт» (user_prompt_override)
+    user_prompt_override: Optional[str] = None
     email: Optional[str] = None  # куда продублировать готовый материал
+
+    @property
+    def effective_prompt(self) -> str:
+        """Текст промпта, введённый преподавателем (из любого поля)."""
+        return (self.user_prompt_override or self.prompt or "").strip()
 
 
 class SaveRequest(BaseModel):
@@ -837,6 +844,9 @@ def get_lesson(lesson_id: int, db: Session = Depends(get_db)):
             if latest
             else None
         ),
+        # Промпт последней генерации — для автоподстановки в поле ввода на фронтенде.
+        # Пустая строка, если материалов ещё нет или промпт не сохранялся (старые версии).
+        "last_prompt": (latest.prompt_used or "") if latest else "",
         "versions_count": versions_count,
     }
 
@@ -857,12 +867,13 @@ def start_generate(
     lesson.status = "generating"
     lesson.last_error = None
     db.commit()
+    user_prompt = body.effective_prompt
     log.info(
         "POST /api/lessons/%s/generate — статус → generating, фоновая задача поставлена (уточнение: %s)",
-        lesson_id, (body.prompt or "").strip()[:120] or "(нет)",
+        lesson_id, user_prompt[:120] or "(нет)",
     )
 
-    background_tasks.add_task(run_generation, lesson_id, body.prompt, body.email)
+    background_tasks.add_task(run_generation, lesson_id, user_prompt, body.email)
     return {"status": "generating"}
 
 
