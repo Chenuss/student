@@ -5,6 +5,8 @@ pptx_service.py — сервис сборки презентаций PowerPoint 
   1. extract_presentation_json(lesson_title, lesson_text) — отдельный запрос к LLM
      (существующий асинхронный клиент ProxyAPI из llm_service) со строгим требованием
      вернуть JSON-структуру слайдов { "slides": [ {type,title,...}, ... ] }.
+     Системный и user-промпты этого шага загружаются из prompts/pptx/*.md через
+     prompt_loader (кэширование, авто-перечитывание по mtime, fallback-дефолты).'
   2. build_pptx_file(slides_json, output_path) — python-pptx собирает файл в единой
      дизайн-системе «карточек» (Card UI): формат 16:9, светлый фон, акцентные бейджи,
      сетки карточек 2/3/4 колонки, формульные плашки, сравнение «Норма / Ошибка»,
@@ -34,6 +36,7 @@ from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.util import Emu, Inches, Pt
 
 import llm_service
+import prompt_loader
 
 log = logging.getLogger("ktp.pptx")
 
@@ -111,41 +114,42 @@ def _tight(tf, *, left: float = 0.15, right: float = 0.15,
 
 # ---------------------------------------------------------------------------
 # 1. Запрос к LLM: конспект → JSON структуры слайдов
+#    Промпты — внешние файлы prompts/pptx/system.md и prompts/pptx/user.md
+#    (prompt_loader: кэш + авто-перечитывание по mtime + fallback-дефолты).
 # ---------------------------------------------------------------------------
 
-PPTX_SYSTEM_PROMPT = """
-Ты — эксперт по визуализации учебных материалов и созданию презентаций для колледжей СПО.
-Твоя задача — трансформировать переданный текст лекции в структуру слайдов для PowerPoint
-(10–14 слайдов) в дизайн-системе «карточек» (Card UI).
 
-Правила наполнения:
-- Не перегружай текстом. Для слайдов типа "content" формулируй СТРОГО от 2 до 4 ёмких тезиса
-  (по 6–10 слов каждый), чтобы они идеально помещались в карточки сетки 2x1 или 3x1.
-- Первый слайд — титульный (название темы, дисциплина, группа, специальность).
-- Разделы: ключевые понятия, пошаговые алгоритмы монтажа (cards), таблицы/параметры,
-  формулы и нормативы с расшифровкой (formula), типичные ошибки и требования ПУЭ (comparison),
-  итог и контрольные вопросы.
-- Ответ выдай СТРОГО в формате валидного JSON без markdown-обёртки. Допустимые типы слайдов
-  и их поля:
-{
-  "slides": [
-    {"type": "title", "title": "Тема урока", "subtitle": "Дисциплина · группа · специальность"},
-    {"type": "content", "title": "...", "points": ["Тезис 1", "Тезис 2", "Тезис 3"],
-     "notes": "Заметка для преподавателя"},
-    {"type": "cards", "title": "...",
-     "items": [{"step": "01", "title": "Короткий заголовок", "text": "Пояснение 6–10 слов"}],
-     "notes": "..."},
-    {"type": "formula", "title": "...", "formula": "I_p = P / (U * cos φ)",
-     "params": ["I_p — расчётный ток, А", "U — напряжение, В"], "notes": "..."},
-    {"type": "comparison", "title": "...",
-     "correct": "Норма ПУЭ: как делать правильно", "wrong": "Типичная ошибка: что запрещено",
-     "notes": "..."}
-  ]
-}
-- "type": "cards" — 2–4 элемента; step задай номерами "01", "02", "03"...
-- "type": "formula" — params: 2–4 коротких расшифровки параметров формулы.
-- "type": "comparison" — ровно два текста: correct (правильно/норма) и wrong (ошибка/запрещено).
-"""
+def get_pptx_system_prompt() -> str:
+    """Актуальный системный промпт сборки слайдов (из файла prompts/ или fallback)."""
+    return prompt_loader.get_prompt("pptx.system", strip=False)
+
+
+def build_pptx_user_prompt(
+    lesson_title: str,
+    lesson_text: str,
+    discipline_title: str = "",
+    group_name: str = "",
+) -> str:
+    """User-промпт: рендер шаблона prompts/pptx/user.md с плейсхолдерами."""
+    ctx = []
+    if discipline_title:
+        ctx.append(f"Дисциплина: {discipline_title}")
+    if group_name:
+        ctx.append(f"Группа: {group_name}")
+    ctx_line = "; ".join(ctx)
+    return prompt_loader.render_prompt(
+        "pptx.user",
+        {
+            "ctx_line": ctx_line,
+            "lesson_title": lesson_title,
+            "lesson_text": lesson_text,
+        },
+    )
+
+
+# Совместимость: имя константы сохранено, но значение живое (см. llm_service._LazyStr)
+PPTX_SYSTEM_PROMPT = llm_service._LazyStr(get_pptx_system_prompt)
+
 
 _JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}")
 _MD_FENCE_RE = re.compile(r"^```(?:json)?\s*([\s\S]*?)\s*```$", re.IGNORECASE)
@@ -200,18 +204,12 @@ async def extract_presentation_json(
 
     client = llm_service.get_client()
 
-    ctx = []
-    if discipline_title:
-        ctx.append(f"Дисциплина: {discipline_title}")
-    if group_name:
-        ctx.append(f"Группа: {group_name}")
-    ctx_line = ("Контекст: " + "; ".join(ctx) + ".\n\n") if ctx else ""
-    user_prompt = (
-        f"{ctx_line}Тема лекции: {lesson_title}\n\n"
-        "Текст лекции (Markdown-конспект):\n\n"
-        f"{lesson_text}\n\n"
-        "Составь структуру презентации строго по правилам системного промпта. "
-        "Ответ — только валидный JSON без markdown-обёртки."
+    # Промпты — из внешних файлов через prompt_loader (плейсхолдеры {{ ... }})
+    user_prompt = build_pptx_user_prompt(
+        lesson_title=lesson_title,
+        lesson_text=lesson_text,
+        discipline_title=discipline_title,
+        group_name=group_name,
     )
 
     debug = llm_service.llm_debug_enabled()
@@ -220,7 +218,8 @@ async def extract_presentation_json(
         llm_service.MODEL_NAME, llm_service.PROXYAPI_BASE_URL, len(lesson_text),
     )
     if debug:
-        log.debug("→ system-промпт слайдов:\n%s", llm_service.truncate(PPTX_SYSTEM_PROMPT))
+        live_system = get_pptx_system_prompt()
+        log.debug("→ system-промпт слайдов:\n%s", llm_service.truncate(live_system))
         log.debug("→ user-промпт слайдов (%d симв.):\n%s", len(user_prompt), llm_service.truncate(user_prompt))
 
     t0 = time.monotonic()
@@ -229,7 +228,7 @@ async def extract_presentation_json(
         temperature=0.3,
         max_tokens=llm_service.LLM_MAX_TOKENS,
         messages=[
-            {"role": "system", "content": PPTX_SYSTEM_PROMPT},
+            {"role": "system", "content": get_pptx_system_prompt()},
             {"role": "user", "content": user_prompt},
         ],
     )
