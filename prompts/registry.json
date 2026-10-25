@@ -1,0 +1,72 @@
+{
+  "_comment": "Реестр промптов приложения. Тексты — в файлах ниже; метаданные дублируются во front-matter.",
+  "prompts_dir": "prompts",
+  "prompts": [
+    {
+      "key": "material.system",
+      "file": "material/system.md",
+      "type": "system",
+      "description": "Системный промпт методиста электротехники СПО (KaTeX/Mermaid, структура конспекта)",
+      "placeholders": [],
+      "has_fallback_default": true
+    },
+    {
+      "key": "material.user",
+      "file": "material/user.md",
+      "type": "user",
+      "description": "User-промпт генерации дидактического материала (контекст пары/предмета/группы)",
+      "placeholders": [
+        "discipline_title",
+        "group_name",
+        "group_specialty",
+        "plan_title",
+        "topic_title",
+        "lesson_title",
+        "lesson_type",
+        "extra_prompt"
+      ],
+      "has_fallback_default": true
+    },
+    {
+      "key": "pptx.system",
+      "file": "pptx/system.md",
+      "type": "system",
+      "description": "Системный промпт конвертации конспекта в JSON-структуру слайдов (Card UI)",
+      "placeholders": [],
+      "has_fallback_default": true
+    },
+    {
+      "key": "pptx.user",
+      "file": "pptx/user.md",
+      "type": "user",
+      "description": "User-промпт сборки слайдов: тема + полный Markdown-конспект",
+      "placeholders": [
+        "ctx_line",
+        "lesson_title",
+        "lesson_text"
+      ],
+      "has_fallback_default": true
+    },
+    {
+      "key": "mock.material.template",
+      "file": "mocks/material_template.txt",
+      "type": "template",
+      "description": "Шаблон мок-материала (закон Ома) для режима без API-ключа; плейсхолдер {model}",
+      "placeholders": [
+        "model"
+      ],
+      "has_fallback_default": true
+    },
+    {
+      "key": "mock.context_line",
+      "file": "mocks/context_line.txt",
+      "type": "template",
+      "description": "Подстрока контекста (предмет/группа/тема), встраиваемая в мок-конспект",
+      "placeholders": [
+        "ctx_line",
+        "lesson_title"
+      ],
+      "has_fallback_default": true
+    }
+  ]
+}

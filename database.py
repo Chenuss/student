@@ -179,6 +179,25 @@ class MaterialVersion(Base):
     lesson: Mapped["KtpLesson"] = relationship(back_populates="versions")
 
 
+class PromptVersionRecord(Base):
+    """История версий промптов (таблица prompt_versions).
+
+    Каждая редакция текста промпта, сохранённая через API /api/prompts или
+    скрипт migrate_prompts.py, фиксируется отдельной строкой.
+    """
+
+    __tablename__ = "prompt_versions"
+    __table_args__ = (UniqueConstraint("prompt_key", "version_num", name="uq_prompt_version"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    prompt_key: Mapped[str] = mapped_column(String(100), nullable=False, index=True)
+    version_num: Mapped[int] = mapped_column(Integer, default=1)
+    content: Mapped[str] = mapped_column(Text, default="")
+    change_note: Mapped[str] = mapped_column(Text, default="")
+    author: Mapped[str] = mapped_column(String(100), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
 class AppSettings(Base):
     __tablename__ = "app_settings"
 
