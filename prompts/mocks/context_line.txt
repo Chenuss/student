@@ -1,0 +1,9 @@
+---
+key: mock.context_line
+type: template
+version: 1
+description: Подстрока контекста (предмет/группа/тема), встраиваемая в мок-конспект
+updated_at: 2026-10-25T04:37:15Z
+placeholders: ctx_line, lesson_title
+---
+{% if ctx_line %}{{ ctx_line }}{% endif %}Тема пары: {{ lesson_title }}.

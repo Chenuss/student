@@ -64,9 +64,11 @@ from database import (
     KTPPlan,
     KtpLesson,
     MaterialVersion,
+    PromptVersionRecord,
     RpdTopic,
     init_db,
 )
+import prompt_loader
 from app_logging import setup_logging
 from notifier import send_completion_email, smtp_configured
 
@@ -1004,6 +1006,162 @@ def update_settings(body: SettingsRequest, db: Session = Depends(get_db)):
     s.notify_email_enabled = 1 if body.notify_email_enabled else 0
     db.commit()
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# API просмотра/редактирования промптов (+ версионирование изменений в БД)
+# ---------------------------------------------------------------------------
+
+
+class PromptUpdateRequest(BaseModel):
+    content: str = Field(..., description="Новый текст промпта (без front-matter)")
+    change_note: str = ""
+    author: str = "api"
+
+
+def _prompt_versions_dto(db: Session, key: str, limit: int = 50) -> list[dict]:
+    rows = (
+        db.query(PromptVersionRecord)
+        .filter(PromptVersionRecord.prompt_key == key)
+        .order_by(PromptVersionRecord.version_num.desc())
+        .limit(limit)
+        .all()
+    )
+    return [
+        {
+            "version_num": r.version_num,
+            "change_note": r.change_note,
+            "author": r.author,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+            "length": len(r.content or ""),
+        }
+        for r in rows
+    ]
+
+
+@app.get("/api/prompts")
+def api_list_prompts():
+    """Список всех промптов: ключ, тип, файл, источник (файл/fallback), версия."""
+    items = []
+    for info in prompt_loader.list_prompts():
+        meta = prompt_loader.REGISTRY.get(info.key)
+        items.append(
+            {
+                "key": info.key,
+                "type": info.ptype,
+                "file": meta.file if meta else None,
+                "exists": info.exists,
+                "from_default": info.from_default,
+                "version": info.meta.get("version"),
+                "description": info.description,
+                "placeholders": list(info.placeholders or []),
+                "length": len(info.content or ""),
+            }
+        )
+    return {"prompts_dir": prompt_loader.PROMPTS_DIR, "items": items}
+
+
+@app.get("/api/prompts/{key}")
+def api_get_prompt(key: str, db: Session = Depends(get_db)):
+    """Текущий текст промпта + метаданные + последние версии из БД."""
+    try:
+        info = prompt_loader.prompt_info(key)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    return {
+        "key": info.key,
+        "file": prompt_loader.REGISTRY[info.key].file if info.key in prompt_loader.REGISTRY else None,
+        "exists": info.exists,
+        "from_default": info.from_default,
+        "version": info.meta.get("version"),
+        "description": info.description,
+        "placeholders": list(info.placeholders or []),
+        "content": info.content,
+        "versions": _prompt_versions_dto(db, info.key),
+    }
+
+
+@app.put("/api/prompts/{key}")
+def api_update_prompt(key: str, body: PromptUpdateRequest, db: Session = Depends(get_db)):
+    """Сохраняет новый текст промпта в файл и фиксирует версию в БД."""
+    try:
+        info = prompt_loader.save_prompt(
+            key,
+            body.content,
+            extra_meta={"change_note": body.change_note, "author": body.author},
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Не удалось записать файл: {exc}")
+
+    prev_count = (
+        db.query(PromptVersionRecord)
+        .filter(PromptVersionRecord.prompt_key == info.key)
+        .count()
+    )
+    db.add(
+        PromptVersionRecord(
+            prompt_key=info.key,
+            version_num=prev_count + 1,
+            content=info.content,
+            change_note=body.change_note or "",
+            author=body.author or "api",
+        )
+    )
+    db.commit()
+    log.info("Промпт «%s» обновлён через API (версия №%d в БД)", info.key, prev_count + 1)
+    meta = prompt_loader.REGISTRY.get(info.key)
+    return {
+        "ok": True,
+        "key": info.key,
+        "file": meta.file if meta else None,
+        "file_version": info.meta.get("version"),
+        "db_version": prev_count + 1,
+    }
+
+
+@app.get("/api/prompts/{key}/versions")
+def api_prompt_versions(key: str, db: Session = Depends(get_db)):
+    canon = prompt_loader.resolve_key(key)
+    if canon not in prompt_loader.REGISTRY:
+        raise HTTPException(404, f"Неизвестный ключ промпта: {key}")
+    return {"key": canon, "versions": _prompt_versions_dto(db, canon, limit=200)}
+
+
+@app.get("/api/prompts/{key}/versions/{version_num}")
+def api_prompt_version_content(key: str, version_num: int, db: Session = Depends(get_db)):
+    canon = prompt_loader.resolve_key(key)
+    row = (
+        db.query(PromptVersionRecord)
+        .filter(
+            PromptVersionRecord.prompt_key == canon,
+            PromptVersionRecord.version_num == version_num,
+        )
+        .first()
+    )
+    if row is None:
+        raise HTTPException(404, f"Версия {version_num} промпта «{canon}» не найдена")
+    return {
+        "key": canon,
+        "version_num": row.version_num,
+        "content": row.content,
+        "change_note": row.change_note,
+        "author": row.author,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+    }
+
+
+@app.post("/api/prompts/{key}/reload")
+def api_reload_prompt(key: str):
+    """Принудительный сброс кэша промпта (обычно не нужен — работает авто-перечитывание по mtime)."""
+    try:
+        canon = prompt_loader.resolve_key(key)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc))
+    prompt_loader.reload_prompts(canon)
+    info = prompt_loader.prompt_info(canon)
+    return {"ok": True, "key": canon, "from_default": info.from_default, "version": info.meta.get("version")}
 
 
 if __name__ == "__main__":
